@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:wiki.alpinelinux.org)",
+      "WebFetch(domain:www.apalrd.net)",
+      "WebFetch(domain:boot.alpinelinux.org)",
+      "WebFetch(domain:github.com)"
+    ]
+  }
+}
