@@ -33,18 +33,16 @@ pub async fn run(hostname: &str) -> Result<()> {
     let ssh = SshConnection::connect(&node.ip)
         .context("Failed to connect to node via SSH")?;
 
-    // Find the target drive
+    // Find the target drive (prefer NVMe, fallback to sda)
     println!("Detecting target drive...");
     let (drive_output, _) = ssh.execute_with_status(
-        "lsblk -d -n -o NAME,SIZE,TYPE | grep -E 'nvme|sda' | head -1"
+        "ls /dev/nvme0n1 2>/dev/null || ls /dev/sda 2>/dev/null"
     )?;
 
-    let target_drive = drive_output
-        .split_whitespace()
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("Could not detect target drive on node"))?;
-
-    let target_device = format!("/dev/{}", target_drive);
+    let target_device = drive_output.trim().to_string();
+    if target_device.is_empty() {
+        anyhow::bail!("Could not detect target drive on node");
+    }
     println!("Target drive: {}", target_device);
 
     // Wipe the partition table / first 100MB

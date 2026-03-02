@@ -58,19 +58,48 @@ pub async fn run(hostname: &str, image: &str) -> Result<()> {
     let image_size_mb = image_size / (1024 * 1024);
     println!("Image size: {} MB", image_size_mb);
 
-    // Find the target drive
-    println!("Detecting target drive...");
+    // Find available drives
+    println!("Detecting available drives...");
     let (drive_output, _) = ssh.execute_with_status(
-        "lsblk -d -n -o NAME,SIZE,TYPE | grep -E 'nvme|sda' | head -1"
+        "ls -1 /dev/nvme*n1 /dev/sd[a-z] /dev/vd[a-z] /dev/mmcblk[0-9] 2>/dev/null | sort"
     )?;
 
-    let target_drive = drive_output
-        .split_whitespace()
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("Could not detect target drive on node"))?;
+    let drives: Vec<&str> = drive_output.lines().filter(|l| !l.is_empty()).collect();
 
-    let target_device = format!("/dev/{}", target_drive);
-    println!("Target drive: {} ({})", target_device, drive_output.trim());
+    if drives.is_empty() {
+        anyhow::bail!("No drives found on node");
+    }
+
+    let target_device = if drives.len() == 1 {
+        println!("Found drive: {}", drives[0]);
+        drives[0].to_string()
+    } else {
+        println!("\nAvailable drives:");
+        for (i, drive) in drives.iter().enumerate() {
+            // Get drive size
+            let size_cmd = format!("cat /sys/block/{}/size 2>/dev/null", drive.trim_start_matches("/dev/"));
+            let (size_out, _) = ssh.execute_with_status(&size_cmd).unwrap_or_default();
+            let size_sectors: u64 = size_out.trim().parse().unwrap_or(0);
+            let size_gb = (size_sectors * 512) / (1024 * 1024 * 1024);
+            println!("  [{}] {} ({} GB)", i + 1, drive, size_gb);
+        }
+
+        print!("\nSelect drive [1-{}]: ", drives.len());
+        std::io::Write::flush(&mut std::io::stdout())?;
+
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let selection: usize = input.trim().parse()
+            .map_err(|_| anyhow::anyhow!("Invalid selection"))?;
+
+        if selection < 1 || selection > drives.len() {
+            anyhow::bail!("Selection out of range");
+        }
+
+        drives[selection - 1].to_string()
+    };
+
+    println!("Target drive: {}", target_device);
 
     // Transfer image to node
     println!("\nTransferring image to node...");
@@ -95,7 +124,7 @@ pub async fn run(hostname: &str, image: &str) -> Result<()> {
     println!("This may take several minutes...");
 
     let dd_command = format!(
-        "dd if={} of={} bs=4M status=progress conv=fsync 2>&1",
+        "dd if={} of={} bs=4M conv=fsync 2>&1",
         remote_path, target_device
     );
 
