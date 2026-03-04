@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
-use dialoguer::{Confirm, Input};
+use console::style;
+use dialoguer::{theme::ColorfulTheme, Confirm, FuzzySelect, Input};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::fs;
 use std::path::PathBuf;
@@ -8,113 +9,296 @@ use std::time::Duration;
 use crate::config::Config;
 use crate::ssh::{self, SshConnection};
 use crate::status::{get_node_status, NodeStatus};
+use crate::ui;
 use crate::vm;
 
-pub async fn run(hostname: &str, image: &str, vm_name: &str, memory: u32, cpus: u32) -> Result<()> {
+pub async fn run(hostname: Option<&str>, image: Option<&str>) -> Result<()> {
     let config = Config::load()?;
+    let theme = ColorfulTheme::default();
 
-    // Find the node
-    let node = config.get_node(hostname)
-        .ok_or_else(|| anyhow::anyhow!("Node '{}' not found. Use 'cave list' to see registered nodes.", hostname))?;
+    // Check if we have any nodes
+    if config.nodes.is_empty() {
+        ui::print_error("No nodes registered");
+        println!(
+            "  Run {} to add a node first",
+            style("cave init <hostname> <ip> <mac>").cyan()
+        );
+        return Ok(());
+    }
 
-    // Find the image
-    let image_path = find_image(image)?;
-    println!("Image: {:?}", image_path);
+    // Select or validate node
+    let node = if let Some(h) = hostname {
+        config
+            .get_node(h)
+            .ok_or_else(|| anyhow::anyhow!("Node '{}' not found", h))?
+            .clone()
+    } else {
+        // Interactive node selection
+        let node_names: Vec<String> = config
+            .nodes
+            .iter()
+            .map(|n| format!("{} ({})", n.hostname, n.ip))
+            .collect();
+
+        let selection = FuzzySelect::with_theme(&theme)
+            .with_prompt("Select node")
+            .items(&node_names)
+            .default(0)
+            .interact()?;
+
+        config.nodes[selection].clone()
+    };
+
+    // Get available images
+    let images = get_available_images()?;
+    if images.is_empty() {
+        ui::print_error("No images available");
+        println!(
+            "  Run {} to download an image",
+            style("cave image pull <url>").cyan()
+        );
+        return Ok(());
+    }
+
+    // Select or validate image
+    let image_path = if let Some(img) = image {
+        find_image(img)?
+    } else {
+        // Interactive image selection
+        let image_names: Vec<String> = images
+            .iter()
+            .map(|(name, size)| format!("{} ({})", name, ui::format_size(*size)))
+            .collect();
+
+        let selection = FuzzySelect::with_theme(&theme)
+            .with_prompt("Select image")
+            .items(&image_names)
+            .default(0)
+            .interact()?;
+
+        Config::images_dir().join(&images[selection].0)
+    };
+
+    // VM name
+    let vm_name: String = Input::with_theme(&theme)
+        .with_prompt("VM name")
+        .default(node.hostname.clone())
+        .interact_text()?;
+
+    // Memory selection
+    let memory_options = ["1024 MB (1 GB)", "2048 MB (2 GB)", "4096 MB (4 GB)", "8192 MB (8 GB)", "16384 MB (16 GB)"];
+    let memory_values = [1024u32, 2048, 4096, 8192, 16384];
+
+    let memory_idx = FuzzySelect::with_theme(&theme)
+        .with_prompt("Memory")
+        .items(&memory_options)
+        .default(1) // Default to 2GB
+        .interact()?;
+    let memory = memory_values[memory_idx];
+
+    // CPU selection
+    let cpu_options = ["1 CPU", "2 CPUs", "4 CPUs", "8 CPUs"];
+    let cpu_values = [1u32, 2, 4, 8];
+
+    let cpu_idx = FuzzySelect::with_theme(&theme)
+        .with_prompt("CPUs")
+        .items(&cpu_options)
+        .default(1) // Default to 2 CPUs
+        .interact()?;
+    let cpus = cpu_values[cpu_idx];
+
+    // Disk size selection
+    let disk_options = ["Default (image size)", "10 GB", "20 GB", "50 GB", "100 GB", "200 GB"];
+    let disk_values: [Option<u32>; 6] = [None, Some(10), Some(20), Some(50), Some(100), Some(200)];
+
+    let disk_idx = FuzzySelect::with_theme(&theme)
+        .with_prompt("Disk size")
+        .items(&disk_options)
+        .default(2) // Default to 20GB
+        .interact()?;
+    let disk_size = disk_values[disk_idx];
+
+    // Show summary
+    println!();
+    let disk_display = disk_size.map_or("Default".to_string(), |s| format!("{} GB", s));
+    ui::print_box("Deployment Summary", &[
+        ("Node", &format!("{} ({})", node.hostname, node.ip)),
+        ("Image", image_path.file_name().unwrap().to_str().unwrap()),
+        ("VM Name", &vm_name),
+        ("Memory", &ui::format_memory(memory)),
+        ("CPUs", &cpus.to_string()),
+        ("Disk", &disk_display),
+    ]);
+
+    // Confirm deployment
+    let proceed = Confirm::with_theme(&theme)
+        .with_prompt("Deploy VM?")
+        .default(true)
+        .interact()?;
+
+    if !proceed {
+        println!("{}", style("Deployment cancelled").dim());
+        return Ok(());
+    }
+
+    println!();
 
     // Check if this is a cloud image that needs cloud-init
     let seed_iso_path = if needs_cloud_init(&image_path) {
-        Some(create_cloud_init_iso(vm_name)?)
+        Some(create_cloud_init_iso(&vm_name, &theme)?)
     } else {
         None
     };
 
     // Check node status
-    println!("\nChecking node status...");
-    let status = get_node_status(node);
+    let spinner = create_spinner("Checking node status...");
+    let status = get_node_status(&node);
+    spinner.finish_and_clear();
 
     match status {
         NodeStatus::Offline => {
-            anyhow::bail!("Node '{}' is offline. Cannot deploy.", hostname);
+            ui::print_error(&format!("Node '{}' is offline", node.hostname));
+            return Ok(());
         }
         NodeStatus::Active => {
-            println!("Node '{}' has an active VM. Stopping it first...", hostname);
+            ui::print_warning(&format!("Node '{}' has an active VM - stopping it first", node.hostname));
         }
         NodeStatus::Standby => {
-            println!("Node '{}' is in standby mode. Ready for deployment.", hostname);
+            ui::print_success(&format!("Node '{}' is ready", node.hostname));
         }
     }
 
-    // Connect via SSH to the Alpine host
-    println!("Connecting to {} (Alpine host)...", node.ip);
-    let ssh = SshConnection::connect(&node.ip)
-        .context("Failed to connect to node via SSH")?;
+    // Connect via SSH
+    let spinner = create_spinner(&format!("Connecting to {}...", node.ip));
+    let ssh = SshConnection::connect(&node.ip).context("Failed to connect via SSH")?;
+    spinner.finish_and_clear();
+    ui::print_success("Connected");
 
-    // Set up hypervisor if needed
+    // Set up hypervisor
+    let spinner = create_spinner("Setting up hypervisor...");
     vm::setup_hypervisor(&ssh)?;
+    spinner.finish_and_clear();
+    ui::print_success("Hypervisor ready");
 
     // Stop existing VM if running
-    if vm::is_vm_running(&ssh, vm_name)? {
-        println!("Stopping existing VM...");
-        vm::stop_vm(&ssh, vm_name)?;
+    if vm::is_vm_running(&ssh, &vm_name)? {
+        let spinner = create_spinner("Stopping existing VM...");
+        vm::stop_vm(&ssh, &vm_name)?;
+        spinner.finish_and_clear();
+        ui::print_success("Previous VM stopped");
     }
-
-    // Get image size for transfer
-    let image_size = std::fs::metadata(&image_path)?.len();
-    let image_size_mb = image_size / (1024 * 1024);
-    println!("\nImage: {:?}", image_path);
-    println!("Size: {} MB", image_size_mb);
-    println!("VM Name: {}", vm_name);
-    println!("VM Config: {} MB RAM, {} CPUs", memory, cpus);
 
     // Ensure destination directory exists
     let _ = ssh.execute(&format!("mkdir -p {}", vm::VM_IMAGES_PATH));
 
-    // Transfer cloud image to node
-    println!("\nTransferring image to node...");
+    // Transfer image
+    let image_size = std::fs::metadata(&image_path)?.len();
     let remote_image_path = format!("{}/{}.qcow2", vm::VM_IMAGES_PATH, vm_name);
+
+    println!(
+        "\n{} Transferring image {}",
+        style("→").cyan().bold(),
+        style(ui::format_size(image_size)).dim()
+    );
 
     let pb = ProgressBar::new(image_size);
     pb.set_style(
         ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
+            .template("{spinner:.cyan} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
             .unwrap()
-            .progress_chars("#>-"),
+            .progress_chars("━━╸"),
     );
     pb.enable_steady_tick(Duration::from_millis(100));
 
     ssh::scp_file(&node.ip, &image_path, &remote_image_path)
-        .context("Failed to transfer image to node")?;
+        .context("Failed to transfer image")?;
 
-    pb.finish_with_message("Transfer complete");
+    pb.finish_and_clear();
+    ui::print_success("Image transferred");
 
-    // Transfer seed ISO if we have one
+    // Resize disk if a size was specified
+    if let Some(size_gb) = disk_size {
+        let spinner = create_spinner(&format!("Resizing disk to {}GB...", size_gb));
+        let (output, status) = ssh.execute_with_status(&format!(
+            "qemu-img resize {} {}G",
+            remote_image_path, size_gb
+        ))?;
+        spinner.finish_and_clear();
+        if status != 0 {
+            ui::print_warning(&format!("Disk resize failed: {}", output.trim()));
+        } else {
+            ui::print_success(&format!("Disk resized to {}GB", size_gb));
+        }
+    }
+
+    // Transfer seed ISO if needed
     let remote_seed_path = if let Some(ref seed_path) = seed_iso_path {
-        println!("Transferring cloud-init seed ISO...");
+        let spinner = create_spinner("Transferring cloud-init seed...");
         let remote_seed = format!("{}/{}-seed.iso", vm::VM_IMAGES_PATH, vm_name);
         ssh::scp_file(&node.ip, seed_path, &remote_seed)
             .context("Failed to transfer seed ISO")?;
-        println!("  Seed ISO transferred");
+        spinner.finish_and_clear();
+        ui::print_success("Cloud-init seed ready");
         Some(remote_seed)
     } else {
         None
     };
 
     // Start the VM
-    println!("\nStarting VM...");
-    vm::start_vm(&ssh, vm_name, &remote_image_path, remote_seed_path.as_deref(), memory, cpus)?;
+    let spinner = create_spinner("Starting VM...");
+    vm::start_vm(&ssh, &vm_name, &remote_image_path, remote_seed_path.as_deref(), memory, cpus, disk_size)?;
+    spinner.finish_and_clear();
+    ui::print_success("VM started");
 
-    println!("\n=== Deployment Complete ===");
-    println!("VM '{}' is now running on node '{}'.", vm_name, hostname);
-    println!("\nVM Details:");
-    println!("  Host (Alpine): ssh root@{}", node.ip);
-    println!("  Memory: {} MB", memory);
-    println!("  CPUs: {}", cpus);
-    println!("\nThe VM should get an IP via DHCP on your network.");
-    println!("Check your router or run 'cave list' to find it.");
-    println!("\nSSH access (after VM gets IP):");
-    println!("  ssh root@<vm-ip>  (password: cave, or use your SSH key)");
+    // Success message
+    ui::print_completion("Deployment Complete");
+
+    println!();
+    println!(
+        "  {} {} is running on {}",
+        style("VM").bold(),
+        style(&vm_name).cyan(),
+        style(&node.hostname).cyan()
+    );
+    println!();
+    println!("  {} {}", style("Alpine host:").dim(), format!("ssh root@{}", node.ip));
+    let disk_info = disk_size.map_or("default".to_string(), |s| format!("{}GB", s));
+    println!("  {} {}", style("Config:").dim(), format!("{}, {} CPUs, {} disk", ui::format_memory(memory), cpus, disk_info));
+    println!();
+    println!(
+        "  {} {}",
+        style("Tip:").yellow(),
+        "Run 'cave list' to see the VM's IP once it boots"
+    );
 
     Ok(())
+}
+
+fn get_available_images() -> Result<Vec<(String, u64)>> {
+    let images_dir = Config::images_dir();
+    if !images_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut images = Vec::new();
+    for entry in fs::read_dir(&images_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_file() {
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                // Skip seed ISOs
+                if name.ends_with("-seed.iso") || name.ends_with("-seed") {
+                    continue;
+                }
+                let size = fs::metadata(&path)?.len();
+                images.push((name.to_string(), size));
+            }
+        }
+    }
+
+    // Sort by name
+    images.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(images)
 }
 
 fn find_image(image: &str) -> Result<PathBuf> {
@@ -145,36 +329,39 @@ fn find_image(image: &str) -> Result<PathBuf> {
     }
 
     anyhow::bail!(
-        "Image '{}' not found in {:?}. Use 'cave images' to list available images.",
+        "Image '{}' not found. Run {} to see available images.",
         image,
-        images_dir
+        style("cave images").cyan()
     )
 }
 
 fn needs_cloud_init(image_path: &std::path::Path) -> bool {
-    let filename = image_path.file_name()
+    let filename = image_path
+        .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("");
 
-    // Cloud images typically have these patterns
-    filename.contains("cloudimg") ||
-    filename.contains("cloud") ||
-    filename.contains("generic") ||
-    (filename.ends_with(".img") && !filename.contains("disk")) ||
-    (filename.ends_with(".qcow2") && (filename.contains("ubuntu") || filename.contains("debian") || filename.contains("fedora")))
+    filename.contains("cloudimg")
+        || filename.contains("cloud")
+        || filename.contains("generic")
+        || (filename.ends_with(".img") && !filename.contains("disk"))
+        || (filename.ends_with(".qcow2")
+            && (filename.contains("ubuntu")
+                || filename.contains("debian")
+                || filename.contains("fedora")))
 }
 
-fn create_cloud_init_iso(hostname: &str) -> Result<PathBuf> {
-    println!("\nThis is a cloud image. Creating cloud-init configuration...");
+fn create_cloud_init_iso(hostname: &str, theme: &ColorfulTheme) -> Result<PathBuf> {
+    println!();
+    ui::print_header("Cloud-Init Configuration");
 
-    // Prompt for customization
-    let enable_password = Confirm::new()
+    let enable_password = Confirm::with_theme(theme)
         .with_prompt("Enable SSH password login?")
         .default(true)
         .interact()?;
 
     let root_password = if enable_password {
-        Input::new()
+        Input::with_theme(theme)
             .with_prompt("Root password")
             .default("cave".to_string())
             .interact_text()?
@@ -185,7 +372,10 @@ fn create_cloud_init_iso(hostname: &str) -> Result<PathBuf> {
     // Get SSH public key
     let ssh_pubkey_path = Config::ssh_public_key();
     if !ssh_pubkey_path.exists() {
-        anyhow::bail!("SSH public key not found at {:?}. Run 'cave server init' first.", ssh_pubkey_path);
+        anyhow::bail!(
+            "SSH public key not found. Run {} first.",
+            style("cave server init").cyan()
+        );
     }
     let ssh_pubkey = fs::read_to_string(&ssh_pubkey_path)
         .context("Failed to read SSH public key")?
@@ -203,24 +393,20 @@ fn create_cloud_init_iso(hostname: &str) -> Result<PathBuf> {
     let user_data_path = seed_dir.join("user-data");
     let mut user_data = String::from("#cloud-config\n");
 
-    // Users configuration
     user_data.push_str("users:\n");
     user_data.push_str("  - name: root\n");
     user_data.push_str("    lock_passwd: false\n");
     user_data.push_str("    ssh_authorized_keys:\n");
     user_data.push_str(&format!("      - {}\n", ssh_pubkey));
 
-    // SSH settings
     user_data.push_str(&format!("ssh_pwauth: {}\n", enable_password));
 
-    // Password configuration
     if enable_password && !root_password.is_empty() {
         user_data.push_str("chpasswd:\n");
         user_data.push_str(&format!("  list: |\n    root:{}\n", root_password));
         user_data.push_str("  expire: false\n");
     }
 
-    // Disable cloud-init after first boot (faster subsequent boots)
     user_data.push_str("runcmd:\n");
     user_data.push_str("  - touch /etc/cloud/cloud-init.disabled\n");
 
@@ -228,18 +414,15 @@ fn create_cloud_init_iso(hostname: &str) -> Result<PathBuf> {
 
     // Create meta-data
     let meta_data_path = seed_dir.join("meta-data");
-    let meta_data = format!(
-        "instance-id: {}\nlocal-hostname: {}\n",
-        hostname, hostname
-    );
+    let meta_data = format!("instance-id: {}\nlocal-hostname: {}\n", hostname, hostname);
     fs::write(&meta_data_path, &meta_data)?;
 
     // Create the seed ISO
     let seed_iso_path = Config::images_dir().join(format!("{}-seed.iso", hostname));
 
-    println!("  Creating seed ISO...");
+    let spinner = create_spinner("Creating seed ISO...");
 
-    // Try cloud-localds first (from cloud-image-utils)
+    // Try cloud-localds first
     let result = std::process::Command::new("cloud-localds")
         .arg(&seed_iso_path)
         .arg(&user_data_path)
@@ -248,30 +431,40 @@ fn create_cloud_init_iso(hostname: &str) -> Result<PathBuf> {
 
     if let Ok(output) = result {
         if output.status.success() {
-            println!("  Seed ISO created with cloud-localds");
-            // Clean up temp files
+            spinner.finish_and_clear();
+            ui::print_success("Seed ISO created");
             let _ = fs::remove_dir_all(&seed_dir);
             return Ok(seed_iso_path);
         }
     }
 
     // Fallback to genisoimage/mkisofs
-    let iso_tool = if std::process::Command::new("genisoimage").arg("--version").output().is_ok() {
+    let iso_tool = if std::process::Command::new("genisoimage")
+        .arg("--version")
+        .output()
+        .is_ok()
+    {
         "genisoimage"
-    } else if std::process::Command::new("mkisofs").arg("--version").output().is_ok() {
+    } else if std::process::Command::new("mkisofs")
+        .arg("--version")
+        .output()
+        .is_ok()
+    {
         "mkisofs"
     } else {
+        spinner.finish_and_clear();
         anyhow::bail!(
-            "Neither cloud-localds nor genisoimage/mkisofs found.\n\
-            Install with: sudo pacman -S cloud-image-utils\n\
-            Or: sudo pacman -S cdrtools"
+            "cloud-localds or genisoimage required.\n  Install: {}",
+            style("sudo pacman -S cloud-image-utils").cyan()
         );
     };
 
     let output = std::process::Command::new(iso_tool)
         .args([
-            "-output", seed_iso_path.to_str().unwrap(),
-            "-volid", "CIDATA",
+            "-output",
+            seed_iso_path.to_str().unwrap(),
+            "-volid",
+            "CIDATA",
             "-joliet",
             "-rock",
             user_data_path.to_str().unwrap(),
@@ -281,16 +474,30 @@ fn create_cloud_init_iso(hostname: &str) -> Result<PathBuf> {
         .context("Failed to create seed ISO")?;
 
     if !output.status.success() {
+        spinner.finish_and_clear();
         anyhow::bail!(
             "Failed to create seed ISO:\n{}",
             String::from_utf8_lossy(&output.stderr)
         );
     }
 
-    println!("  Seed ISO created with {}", iso_tool);
+    spinner.finish_and_clear();
+    ui::print_success("Seed ISO created");
 
-    // Clean up temp files
     let _ = fs::remove_dir_all(&seed_dir);
 
     Ok(seed_iso_path)
+}
+
+fn create_spinner(message: &str) -> ProgressBar {
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.cyan} {msg}")
+            .unwrap()
+            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
+    );
+    spinner.set_message(message.to_string());
+    spinner.enable_steady_tick(Duration::from_millis(80));
+    spinner
 }

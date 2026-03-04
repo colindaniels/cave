@@ -141,6 +141,7 @@ pub fn start_vm(
     seed_iso_path: Option<&str>,
     memory_mb: u32,
     cpus: u32,
+    disk_size_gb: Option<u32>,
 ) -> Result<()> {
     let disk_path = format!("{}/{}.qcow2", VM_IMAGES_PATH, vm_name);
     let pid_file = format!("{}/{}.pid", VM_RUN_PATH, vm_name);
@@ -162,6 +163,18 @@ pub fn start_vm(
         ))?;
         if cp_status != 0 {
             anyhow::bail!("Failed to copy image to VM storage");
+        }
+
+        // Resize disk if a size was specified
+        if let Some(size_gb) = disk_size_gb {
+            println!("  Resizing disk to {}GB...", size_gb);
+            let (resize_output, resize_status) = ssh.execute_with_status(&format!(
+                "qemu-img resize {} {}G",
+                disk_path, size_gb
+            ))?;
+            if resize_status != 0 {
+                anyhow::bail!("Failed to resize disk: {}", resize_output);
+            }
         }
     }
 

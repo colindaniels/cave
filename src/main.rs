@@ -2,6 +2,8 @@ mod commands;
 mod config;
 mod ssh;
 mod status;
+mod tui;
+mod ui;
 mod vm;
 
 use clap::{Parser, Subcommand};
@@ -36,19 +38,10 @@ enum Commands {
     List,
     /// Deploy an image as a VM on a node
     Deploy {
-        /// Hostname of the node
-        hostname: String,
-        /// Image name to deploy
-        image: String,
-        /// VM hostname (defaults to node hostname if not specified)
-        #[arg(long)]
-        name: Option<String>,
-        /// Memory in MB (default: 2048)
-        #[arg(long, default_value = "2048")]
-        memory: u32,
-        /// Number of CPUs (default: 2)
-        #[arg(long, default_value = "2")]
-        cpus: u32,
+        /// Hostname of the node (interactive if not provided)
+        hostname: Option<String>,
+        /// Image name to deploy (interactive if not provided)
+        image: Option<String>,
     },
     /// Stop and remove the VM on a node
     Destroy {
@@ -70,6 +63,9 @@ enum Commands {
         #[command(subcommand)]
         action: ImageAction,
     },
+    /// Launch interactive TUI dashboard
+    #[command(alias = "ui")]
+    Tui,
 }
 
 #[derive(Subcommand)]
@@ -118,9 +114,8 @@ async fn main() -> anyhow::Result<()> {
         },
         Commands::Init { hostname, ip, mac } => init::run(&hostname, &ip, &mac).await?,
         Commands::List => list::run().await?,
-        Commands::Deploy { hostname, image, name, memory, cpus } => {
-            let vm_name = name.as_deref().unwrap_or(&hostname);
-            deploy::run(&hostname, &image, vm_name, memory, cpus).await?
+        Commands::Deploy { hostname, image } => {
+            deploy::run(hostname.as_deref(), image.as_deref()).await?
         },
         Commands::Destroy { hostname, name } => {
             let vm_name = name.as_deref().unwrap_or(&hostname);
@@ -132,6 +127,7 @@ async fn main() -> anyhow::Result<()> {
             ImageAction::Pull { url } => images::pull(&url).await?,
             ImageAction::Search { query } => images::search(&query).await?,
         },
+        Commands::Tui => tui::run()?,
     }
 
     Ok(())

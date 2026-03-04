@@ -1,21 +1,128 @@
 use anyhow::Result;
-use tabled::{Table, Tabled, settings::Style};
+use console::style;
+use indicatif::{ProgressBar, ProgressStyle};
+use std::time::Duration;
 
 use crate::config::Config;
 use crate::ssh::SshConnection;
 use crate::status::{get_node_info, NodeStatus};
+use crate::ui;
 use crate::vm;
 
-#[derive(Tabled)]
-struct ListRow {
-    #[tabled(rename = "NAME")]
-    name: String,
-    #[tabled(rename = "IP")]
-    ip: String,
-    #[tabled(rename = "STATUS")]
-    status: String,
-    #[tabled(rename = "SPECS")]
-    specs: String,
+pub async fn run() -> Result<()> {
+    let config = Config::load()?;
+
+    if config.nodes.is_empty() {
+        ui::print_warning("No nodes registered");
+        println!(
+            "  Run {} to add a node",
+            style("cave init <hostname> <ip> <mac>").cyan()
+        );
+        return Ok(());
+    }
+
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.cyan} {msg}")
+            .unwrap()
+            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
+    );
+    spinner.set_message("Checking nodes...");
+    spinner.enable_steady_tick(Duration::from_millis(80));
+
+    let mut results = Vec::new();
+    for node in &config.nodes {
+        let info = get_node_info(node);
+        let vm_info = if info.status == NodeStatus::Active {
+            get_vm_info(&node.ip)
+        } else {
+            None
+        };
+        results.push((node.clone(), info, vm_info));
+    }
+
+    spinner.finish_and_clear();
+
+    // Print header
+    println!();
+    println!(
+        "  {}",
+        style(format!(
+            "{:<16} {:<16} {:<10} {}",
+            "NAME", "IP", "STATUS", "SPECS"
+        ))
+        .dim()
+    );
+    println!("  {}", style("─".repeat(70)).dim());
+
+    for (node, info, vm_info) in &results {
+        // Status with color
+        let status_display = match info.status {
+            NodeStatus::Active => style("active").green().bold().to_string(),
+            NodeStatus::Standby => style("standby").yellow().to_string(),
+            NodeStatus::Offline => style("offline").red().dim().to_string(),
+        };
+
+        // Compact specs
+        let specs = if info.status != NodeStatus::Offline {
+            format!(
+                "{} {} {}",
+                style(truncate(&info.specs.cpu, 18)).dim(),
+                style("·").dim(),
+                style(format!("{}c/{}", info.specs.cores.replace(" cores", ""), &info.specs.ram)).dim()
+            )
+        } else {
+            style("─").dim().to_string()
+        };
+
+        println!(
+            "  {:<16} {:<16} {:<18} {}",
+            style(&node.hostname).bold(),
+            &node.ip,
+            status_display,
+            specs
+        );
+
+        // Show VM info if active
+        if let Some(vm) = vm_info {
+            let vm_status = style("running").green().to_string();
+            let vm_specs = format!("{}, {} CPU", vm.memory, vm.cpus);
+
+            println!(
+                "  {:<16} {:<16} {:<18} {}",
+                style(format!("└─ {}", vm.name)).cyan(),
+                if vm.ip.is_empty() {
+                    style("booting...").dim().to_string()
+                } else {
+                    vm.ip.clone()
+                },
+                vm_status,
+                style(vm_specs).dim()
+            );
+        }
+    }
+
+    println!();
+
+    // Summary
+    let active = results.iter().filter(|(_, i, _)| i.status == NodeStatus::Active).count();
+    let standby = results.iter().filter(|(_, i, _)| i.status == NodeStatus::Standby).count();
+    let offline = results.iter().filter(|(_, i, _)| i.status == NodeStatus::Offline).count();
+
+    print!("  ");
+    if active > 0 {
+        print!("{} ", style(format!("{} active", active)).green());
+    }
+    if standby > 0 {
+        print!("{} ", style(format!("{} standby", standby)).yellow());
+    }
+    if offline > 0 {
+        print!("{} ", style(format!("{} offline", offline)).red().dim());
+    }
+    println!();
+
+    Ok(())
 }
 
 struct VmInfo {
@@ -25,75 +132,15 @@ struct VmInfo {
     cpus: String,
 }
 
-pub async fn run() -> Result<()> {
-    let config = Config::load()?;
-
-    if config.nodes.is_empty() {
-        println!("No nodes registered. Use 'cave init <hostname> <ip> <mac>' to add a node.");
-        return Ok(());
-    }
-
-    println!("Checking node status...\n");
-
-    let mut rows: Vec<ListRow> = Vec::new();
-
-    for node in &config.nodes {
-        let info = get_node_info(node);
-
-        // Compact hardware specs
-        let hw_specs = format!(
-            "{} · {} · {}",
-            truncate(&info.specs.cpu, 20),
-            info.specs.cores.replace(" cores", "c"),
-            info.specs.ram
-        );
-
-        let status_str = match info.status {
-            NodeStatus::Offline => "offline",
-            NodeStatus::Standby => "standby",
-            NodeStatus::Active => "active",
-        };
-
-        // Add node row
-        rows.push(ListRow {
-            name: node.hostname.clone(),
-            ip: node.ip.clone(),
-            status: status_str.to_string(),
-            specs: hw_specs,
-        });
-
-        // If active, add VM row underneath
-        if info.status == NodeStatus::Active {
-            if let Some(vm_info) = get_vm_info(&node.ip) {
-                let vm_specs = format!("{} · {} CPU", vm_info.memory, vm_info.cpus);
-                rows.push(ListRow {
-                    name: format!(" └ {}", vm_info.name),
-                    ip: vm_info.ip,
-                    status: "running".to_string(),
-                    specs: vm_specs,
-                });
-            }
-        }
-    }
-
-    let mut table = Table::new(rows);
-    table.with(Style::rounded());
-    println!("{}", table);
-
-    Ok(())
-}
-
 fn get_vm_info(host_ip: &str) -> Option<VmInfo> {
     let ssh = SshConnection::connect(host_ip).ok()?;
 
-    // Get VM name, IP, and specs from running QEMU process
-    let output = ssh.execute(&format!(
-        r#"for pid in {}/*.pid; do
+    let output = ssh
+        .execute(&format!(
+            r#"for pid in {}/*.pid; do
             [ -f "$pid" ] && kill -0 $(cat "$pid") 2>/dev/null && {{
                 vm=$(basename "$pid" .pid)
-                # Get IP from log
                 ip=$(grep 'ci-info:.*ens.*True' "{}/$vm.log" 2>/dev/null | sed 's/.*True[^0-9]*\([0-9.]\+\).*/\1/' | head -1)
-                # Get memory and cpus from QEMU process args
                 qemu_args=$(cat /proc/$(cat "$pid")/cmdline 2>/dev/null | tr '\0' ' ')
                 mem=$(echo "$qemu_args" | sed -n 's/.*-m \([0-9]*\).*/\1/p')
                 cpus=$(echo "$qemu_args" | sed -n 's/.*-smp \([0-9]*\).*/\1/p')
@@ -101,14 +148,19 @@ fn get_vm_info(host_ip: &str) -> Option<VmInfo> {
                 exit 0
             }}
         done"#,
-        vm::VM_RUN_PATH, vm::VM_RUN_PATH
-    )).ok()?;
+            vm::VM_RUN_PATH, vm::VM_RUN_PATH
+        ))
+        .ok()?;
 
     let parts: Vec<&str> = output.trim().split('|').collect();
     if parts.len() >= 4 && !parts[0].is_empty() {
         Some(VmInfo {
             name: parts[0].to_string(),
-            ip: if parts[1].is_empty() { "booting...".to_string() } else { parts[1].to_string() },
+            ip: if parts[1].is_empty() {
+                String::new()
+            } else {
+                parts[1].to_string()
+            },
             memory: format!("{}M", parts[2]),
             cpus: parts[3].to_string(),
         })

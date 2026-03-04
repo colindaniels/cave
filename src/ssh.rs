@@ -2,9 +2,10 @@ use anyhow::{Context, Result};
 use ssh2::Session;
 use std::fs;
 use std::io::Read;
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 use crate::config::Config;
 
@@ -142,14 +143,30 @@ pub struct SshConnection {
 
 impl SshConnection {
     pub fn connect(ip: &str) -> Result<Self> {
+        Self::connect_timeout(ip, Duration::from_secs(10))
+    }
+
+    /// Connect with a custom timeout - useful for quick status checks
+    pub fn connect_timeout(ip: &str, timeout: Duration) -> Result<Self> {
         let private_key = Config::ssh_private_key();
 
-        let tcp = TcpStream::connect(format!("{}:22", ip))
+        let addr = format!("{}:22", ip)
+            .to_socket_addrs()
+            .with_context(|| format!("Invalid address: {}", ip))?
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("Could not resolve address: {}", ip))?;
+
+        let tcp = TcpStream::connect_timeout(&addr, timeout)
             .with_context(|| format!("Failed to connect to {}:22", ip))?;
+
+        // Set read/write timeouts too
+        tcp.set_read_timeout(Some(timeout)).ok();
+        tcp.set_write_timeout(Some(timeout)).ok();
 
         let mut session = Session::new()
             .context("Failed to create SSH session")?;
 
+        session.set_timeout(timeout.as_millis() as u32);
         session.set_tcp_stream(tcp);
         session.handshake()
             .context("SSH handshake failed")?;
@@ -159,6 +176,11 @@ impl SshConnection {
             .context("SSH authentication failed")?;
 
         Ok(Self { session })
+    }
+
+    /// Quick check if we can connect (2 second timeout)
+    pub fn can_connect_fast(ip: &str) -> bool {
+        Self::connect_timeout(ip, Duration::from_secs(2)).is_ok()
     }
 
     pub fn execute(&self, command: &str) -> Result<String> {

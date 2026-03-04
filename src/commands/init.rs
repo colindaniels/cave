@@ -1,7 +1,9 @@
 use anyhow::Result;
+use console::style;
 
 use crate::config::Config;
 use crate::ssh;
+use crate::ui;
 
 pub async fn run(hostname: &str, ip: &str, mac: &str) -> Result<()> {
     // Validate MAC address format
@@ -18,16 +20,29 @@ pub async fn run(hostname: &str, ip: &str, mac: &str) -> Result<()> {
     // Update SSH config
     ssh::update_ssh_config(hostname, ip)?;
 
-    println!("Node '{}' registered successfully", hostname);
-    println!("  IP: {}", ip);
-    println!("  MAC: {}", mac);
-    println!("\nYou can now SSH to the node with: ssh {}", hostname);
+    ui::print_success(&format!("Node '{}' registered", hostname));
+    println!();
+    ui::print_box("Node Details", &[
+        ("Hostname", hostname),
+        ("IP", ip),
+        ("MAC", &mac),
+    ]);
+    println!();
+    println!(
+        "  {} {}",
+        style("SSH:").dim(),
+        style(format!("ssh {}", hostname)).cyan()
+    );
+    println!(
+        "  {} {}",
+        style("Deploy:").dim(),
+        style("cave deploy").cyan()
+    );
 
     Ok(())
 }
 
 fn normalize_mac(mac: &str) -> Result<String> {
-    // Accept formats like: aa:bb:cc:dd:ee:ff, aa-bb-cc-dd-ee-ff, aabbccddeeff
     let cleaned: String = mac
         .chars()
         .filter(|c| c.is_ascii_hexdigit())
@@ -35,10 +50,12 @@ fn normalize_mac(mac: &str) -> Result<String> {
         .to_lowercase();
 
     if cleaned.len() != 12 {
-        anyhow::bail!("Invalid MAC address: {}. Expected 12 hex digits.", mac);
+        anyhow::bail!(
+            "Invalid MAC address: {}. Expected 12 hex digits.",
+            style(mac).red()
+        );
     }
 
-    // Format as aa:bb:cc:dd:ee:ff
     let formatted = cleaned
         .chars()
         .collect::<Vec<_>>()
@@ -54,13 +71,19 @@ fn validate_ip(ip: &str) -> Result<()> {
     let parts: Vec<&str> = ip.split('.').collect();
 
     if parts.len() != 4 {
-        anyhow::bail!("Invalid IP address: {}. Expected format: x.x.x.x", ip);
+        anyhow::bail!(
+            "Invalid IP address: {}. Expected format: x.x.x.x",
+            style(ip).red()
+        );
     }
 
     for part in parts {
         match part.parse::<u8>() {
             Ok(_) => {}
-            Err(_) => anyhow::bail!("Invalid IP address: {}. Each octet must be 0-255.", ip),
+            Err(_) => anyhow::bail!(
+                "Invalid IP address: {}. Each octet must be 0-255.",
+                style(ip).red()
+            ),
         }
     }
 
