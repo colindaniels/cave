@@ -1,5 +1,6 @@
 use crate::config::Node;
 use crate::ssh::SshConnection;
+use crate::vm;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum NodeStatus {
@@ -44,34 +45,23 @@ pub struct NodeInfo {
     pub mac: String,
     pub status: NodeStatus,
     pub specs: NodeSpecs,
+    pub vm_info: Option<VmStatus>,
+}
+
+#[derive(Debug, Clone)]
+pub struct VmStatus {
+    pub running: bool,
+    pub pid: Option<String>,
 }
 
 pub fn get_node_status(node: &Node) -> NodeStatus {
     match SshConnection::connect(&node.ip) {
         Ok(ssh) => {
-            // Check if there's an OS installed on the primary drive
-            // In standby mode (live Alpine), there's no partition table on nvme
-            let (output, status) = ssh
-                .execute_with_status("lsblk -d -n -o NAME,TYPE | grep -E 'nvme|sda' | head -1")
-                .unwrap_or_default();
-
-            if status != 0 || output.trim().is_empty() {
-                // No block device found, consider it standby
-                return NodeStatus::Standby;
-            }
-
-            // Check if there's a filesystem on the drive
-            let drive = output.split_whitespace().next().unwrap_or("nvme0n1");
-            let (fs_output, fs_status) = ssh
-                .execute_with_status(&format!("lsblk -f /dev/{} 2>/dev/null | grep -v '^NAME' | grep -v '^$' | head -1", drive))
-                .unwrap_or_default();
-
-            if fs_status != 0 || fs_output.trim().is_empty() || !fs_output.contains(|c: char| c.is_alphabetic()) {
-                // No filesystem, this is standby mode
-                NodeStatus::Standby
-            } else {
-                // Has filesystem, actively deployed
-                NodeStatus::Active
+            // Check if a VM is running on this node
+            match vm::is_vm_running(&ssh, &node.hostname) {
+                Ok(true) => NodeStatus::Active,
+                Ok(false) => NodeStatus::Standby,
+                Err(_) => NodeStatus::Standby, // Can connect but VM check failed, treat as standby
             }
         }
         Err(_) => NodeStatus::Offline,
@@ -123,12 +113,36 @@ pub fn get_node_specs(node: &Node) -> NodeSpecs {
     }
 }
 
+pub fn get_vm_status(node: &Node) -> Option<VmStatus> {
+    match SshConnection::connect(&node.ip) {
+        Ok(ssh) => {
+            match vm::get_vm_info(&ssh, &node.hostname) {
+                Ok(Some(info)) => Some(VmStatus {
+                    running: true,
+                    pid: Some(info.pid),
+                }),
+                Ok(None) => Some(VmStatus {
+                    running: false,
+                    pid: None,
+                }),
+                Err(_) => None,
+            }
+        }
+        Err(_) => None,
+    }
+}
+
 pub fn get_node_info(node: &Node) -> NodeInfo {
     let status = get_node_status(node);
     let specs = if status != NodeStatus::Offline {
         get_node_specs(node)
     } else {
         NodeSpecs::default()
+    };
+    let vm_info = if status != NodeStatus::Offline {
+        get_vm_status(node)
+    } else {
+        None
     };
 
     NodeInfo {
@@ -137,5 +151,6 @@ pub fn get_node_info(node: &Node) -> NodeInfo {
         mac: node.mac.clone(),
         status,
         specs,
+        vm_info,
     }
 }

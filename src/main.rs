@@ -2,6 +2,7 @@ mod commands;
 mod config;
 mod ssh;
 mod status;
+mod vm;
 
 use clap::{Parser, Subcommand};
 use commands::{deploy, destroy, images, init, list, remove, server};
@@ -33,14 +34,20 @@ enum Commands {
     },
     /// List all registered nodes with status and specs
     List,
-    /// Deploy an image to a node
+    /// Deploy an image as a VM on a node
     Deploy {
         /// Hostname of the node
         hostname: String,
         /// Image name to deploy
         image: String,
+        /// Memory in MB (default: 2048)
+        #[arg(long, default_value = "2048")]
+        memory: u32,
+        /// Number of CPUs (default: 2)
+        #[arg(long, default_value = "2")]
+        cpus: u32,
     },
-    /// Destroy a node (wipe drive and reboot to PXE)
+    /// Stop and remove the VM on a node
     Destroy {
         /// Hostname of the node
         hostname: String,
@@ -105,7 +112,7 @@ async fn main() -> anyhow::Result<()> {
         },
         Commands::Init { hostname, ip, mac } => init::run(&hostname, &ip, &mac).await?,
         Commands::List => list::run().await?,
-        Commands::Deploy { hostname, image } => deploy::run(&hostname, &image).await?,
+        Commands::Deploy { hostname, image, memory, cpus } => deploy::run(&hostname, &image, memory, cpus).await?,
         Commands::Destroy { hostname } => destroy::run(&hostname).await?,
         Commands::Remove { hostname } => remove::run(&hostname).await?,
         Commands::Images => images::list().await?,
