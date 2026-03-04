@@ -10,7 +10,7 @@ use crate::ssh::{self, SshConnection};
 use crate::status::{get_node_status, NodeStatus};
 use crate::vm;
 
-pub async fn run(hostname: &str, image: &str, memory: u32, cpus: u32) -> Result<()> {
+pub async fn run(hostname: &str, image: &str, vm_name: &str, memory: u32, cpus: u32) -> Result<()> {
     let config = Config::load()?;
 
     // Find the node
@@ -23,7 +23,7 @@ pub async fn run(hostname: &str, image: &str, memory: u32, cpus: u32) -> Result<
 
     // Check if this is a cloud image that needs cloud-init
     let seed_iso_path = if needs_cloud_init(&image_path) {
-        Some(create_cloud_init_iso(hostname)?)
+        Some(create_cloud_init_iso(vm_name)?)
     } else {
         None
     };
@@ -53,9 +53,9 @@ pub async fn run(hostname: &str, image: &str, memory: u32, cpus: u32) -> Result<
     vm::setup_hypervisor(&ssh)?;
 
     // Stop existing VM if running
-    if vm::is_vm_running(&ssh, hostname)? {
+    if vm::is_vm_running(&ssh, vm_name)? {
         println!("Stopping existing VM...");
-        vm::stop_vm(&ssh, hostname)?;
+        vm::stop_vm(&ssh, vm_name)?;
     }
 
     // Get image size for transfer
@@ -63,6 +63,7 @@ pub async fn run(hostname: &str, image: &str, memory: u32, cpus: u32) -> Result<
     let image_size_mb = image_size / (1024 * 1024);
     println!("\nImage: {:?}", image_path);
     println!("Size: {} MB", image_size_mb);
+    println!("VM Name: {}", vm_name);
     println!("VM Config: {} MB RAM, {} CPUs", memory, cpus);
 
     // Ensure destination directory exists
@@ -70,7 +71,7 @@ pub async fn run(hostname: &str, image: &str, memory: u32, cpus: u32) -> Result<
 
     // Transfer cloud image to node
     println!("\nTransferring image to node...");
-    let remote_image_path = format!("{}/{}.qcow2", vm::VM_IMAGES_PATH, hostname);
+    let remote_image_path = format!("{}/{}.qcow2", vm::VM_IMAGES_PATH, vm_name);
 
     let pb = ProgressBar::new(image_size);
     pb.set_style(
@@ -89,7 +90,7 @@ pub async fn run(hostname: &str, image: &str, memory: u32, cpus: u32) -> Result<
     // Transfer seed ISO if we have one
     let remote_seed_path = if let Some(ref seed_path) = seed_iso_path {
         println!("Transferring cloud-init seed ISO...");
-        let remote_seed = format!("{}/{}-seed.iso", vm::VM_IMAGES_PATH, hostname);
+        let remote_seed = format!("{}/{}-seed.iso", vm::VM_IMAGES_PATH, vm_name);
         ssh::scp_file(&node.ip, seed_path, &remote_seed)
             .context("Failed to transfer seed ISO")?;
         println!("  Seed ISO transferred");
@@ -100,10 +101,10 @@ pub async fn run(hostname: &str, image: &str, memory: u32, cpus: u32) -> Result<
 
     // Start the VM
     println!("\nStarting VM...");
-    vm::start_vm(&ssh, hostname, &remote_image_path, remote_seed_path.as_deref(), memory, cpus)?;
+    vm::start_vm(&ssh, vm_name, &remote_image_path, remote_seed_path.as_deref(), memory, cpus)?;
 
     println!("\n=== Deployment Complete ===");
-    println!("VM '{}' is now running on node.", hostname);
+    println!("VM '{}' is now running on node '{}'.", vm_name, hostname);
     println!("\nVM Details:");
     println!("  Host (Alpine): ssh root@{}", node.ip);
     println!("  Memory: {} MB", memory);

@@ -12,6 +12,17 @@ use crate::ssh;
 const ALPINE_VERSION: &str = "3.21";
 const ALPINE_MIRROR: &str = "https://dl-cdn.alpinelinux.org/alpine";
 
+fn require_root(action: &str) -> Result<()> {
+    // Check if running as root (UID 0)
+    if unsafe { libc::geteuid() } != 0 {
+        anyhow::bail!(
+            "The 'cave server {}' command requires root privileges.\nRun with: sudo cave server {}",
+            action, action
+        );
+    }
+    Ok(())
+}
+
 pub async fn init(port: u16) -> Result<()> {
     println!("Initializing cave server...");
 
@@ -158,6 +169,8 @@ fn get_local_ip() -> Result<String> {
 }
 
 pub async fn start() -> Result<()> {
+    require_root("start")?;
+
     let config = Config::load()?;
 
     if !config.server.initialized {
@@ -267,6 +280,8 @@ fn start_http_server(port: u16) -> Result<u32> {
 }
 
 pub async fn stop() -> Result<()> {
+    require_root("stop")?;
+
     let pid_file = Config::pixiecore_pid_file();
 
     if !pid_file.exists() {
@@ -294,6 +309,8 @@ pub async fn stop() -> Result<()> {
 }
 
 pub async fn status() -> Result<()> {
+    require_root("status")?;
+
     let config = Config::load()?;
     let pid_file = Config::pixiecore_pid_file();
 

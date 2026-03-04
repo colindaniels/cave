@@ -104,6 +104,7 @@ dependencies = [
  "dirs",
  "futures-util",
  "indicatif",
+ "libc",
  "reqwest",
  "serde",
  "ssh2",

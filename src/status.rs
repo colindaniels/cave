@@ -57,15 +57,24 @@ pub struct VmStatus {
 pub fn get_node_status(node: &Node) -> NodeStatus {
     match SshConnection::connect(&node.ip) {
         Ok(ssh) => {
-            // Check if a VM is running on this node
-            match vm::is_vm_running(&ssh, &node.hostname) {
+            // Check if any VM is running on this node
+            match is_any_vm_running(&ssh) {
                 Ok(true) => NodeStatus::Active,
                 Ok(false) => NodeStatus::Standby,
-                Err(_) => NodeStatus::Standby, // Can connect but VM check failed, treat as standby
+                Err(_) => NodeStatus::Standby,
             }
         }
         Err(_) => NodeStatus::Offline,
     }
+}
+
+/// Check if any VM is running on the node by looking for active PID files
+fn is_any_vm_running(ssh: &SshConnection) -> anyhow::Result<bool> {
+    let (output, _) = ssh.execute_with_status(&format!(
+        "for pid in {}/*.pid; do [ -f \"$pid\" ] && kill -0 $(cat \"$pid\") 2>/dev/null && echo running && exit 0; done; echo stopped",
+        vm::VM_RUN_PATH
+    ))?;
+    Ok(output.trim() == "running")
 }
 
 pub fn get_node_specs(node: &Node) -> NodeSpecs {

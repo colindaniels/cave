@@ -40,6 +40,9 @@ enum Commands {
         hostname: String,
         /// Image name to deploy
         image: String,
+        /// VM hostname (defaults to node hostname if not specified)
+        #[arg(long)]
+        name: Option<String>,
         /// Memory in MB (default: 2048)
         #[arg(long, default_value = "2048")]
         memory: u32,
@@ -51,6 +54,9 @@ enum Commands {
     Destroy {
         /// Hostname of the node
         hostname: String,
+        /// VM name (defaults to node hostname if not specified)
+        #[arg(long)]
+        name: Option<String>,
     },
     /// Remove a node from the registry
     Remove {
@@ -112,8 +118,14 @@ async fn main() -> anyhow::Result<()> {
         },
         Commands::Init { hostname, ip, mac } => init::run(&hostname, &ip, &mac).await?,
         Commands::List => list::run().await?,
-        Commands::Deploy { hostname, image, memory, cpus } => deploy::run(&hostname, &image, memory, cpus).await?,
-        Commands::Destroy { hostname } => destroy::run(&hostname).await?,
+        Commands::Deploy { hostname, image, name, memory, cpus } => {
+            let vm_name = name.as_deref().unwrap_or(&hostname);
+            deploy::run(&hostname, &image, vm_name, memory, cpus).await?
+        },
+        Commands::Destroy { hostname, name } => {
+            let vm_name = name.as_deref().unwrap_or(&hostname);
+            destroy::run(&hostname, vm_name).await?
+        },
         Commands::Remove { hostname } => remove::run(&hostname).await?,
         Commands::Images => images::list().await?,
         Commands::Image { action } => match action {

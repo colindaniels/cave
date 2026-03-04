@@ -4,7 +4,7 @@ use crate::config::Config;
 use crate::ssh::SshConnection;
 use crate::vm;
 
-pub async fn run(hostname: &str) -> Result<()> {
+pub async fn run(hostname: &str, vm_name: &str) -> Result<()> {
     let config = Config::load()?;
 
     // Find the node
@@ -17,17 +17,17 @@ pub async fn run(hostname: &str) -> Result<()> {
         .context("Failed to connect to node via SSH")?;
 
     // Check if VM is running
-    if !vm::is_vm_running(&ssh, hostname)? {
-        println!("No VM '{}' is running on this node.", hostname);
+    if !vm::is_vm_running(&ssh, vm_name)? {
+        println!("No VM '{}' is running on this node.", vm_name);
         return Ok(());
     }
 
     // Stop and delete the VM
-    println!("Stopping VM '{}'...", hostname);
-    vm::delete_vm(&ssh, hostname)?;
+    println!("Stopping VM '{}'...", vm_name);
+    vm::delete_vm(&ssh, vm_name)?;
 
     println!("\n=== Destroy Complete ===");
-    println!("VM '{}' has been stopped and removed.", hostname);
+    println!("VM '{}' has been stopped and removed.", vm_name);
     println!("Node is back in standby mode (Alpine host still running).");
     println!("Use 'cave deploy {}' to deploy a new VM.", hostname);
 

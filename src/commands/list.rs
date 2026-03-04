@@ -1,5 +1,5 @@
 use anyhow::Result;
-use tabled::{Table, Tabled};
+use tabled::{Table, Tabled, settings::Style};
 
 use crate::config::Config;
 use crate::ssh::SshConnection;
@@ -7,23 +7,22 @@ use crate::status::{get_node_info, NodeStatus};
 use crate::vm;
 
 #[derive(Tabled)]
-struct NodeRow {
-    #[tabled(rename = "HOSTNAME")]
-    hostname: String,
-    #[tabled(rename = "IP (HOST)")]
+struct ListRow {
+    #[tabled(rename = "NAME")]
+    name: String,
+    #[tabled(rename = "IP")]
     ip: String,
-    #[tabled(rename = "IP (VM)")]
-    vm_ip: String,
-    #[tabled(rename = "MAC")]
-    mac: String,
     #[tabled(rename = "STATUS")]
     status: String,
-    #[tabled(rename = "CPU")]
-    cpu: String,
-    #[tabled(rename = "CORES")]
-    cores: String,
-    #[tabled(rename = "RAM")]
-    ram: String,
+    #[tabled(rename = "SPECS")]
+    specs: String,
+}
+
+struct VmInfo {
+    name: String,
+    ip: String,
+    memory: String,
+    cpus: String,
 }
 
 pub async fn run() -> Result<()> {
@@ -36,71 +35,85 @@ pub async fn run() -> Result<()> {
 
     println!("Checking node status...\n");
 
-    let mut rows: Vec<NodeRow> = Vec::new();
+    let mut rows: Vec<ListRow> = Vec::new();
 
     for node in &config.nodes {
         let info = get_node_info(node);
 
-        let (status_str, vm_ip) = match info.status {
-            NodeStatus::Offline => ("offline".to_string(), "-".to_string()),
-            NodeStatus::Standby => ("standby".to_string(), "-".to_string()),
-            NodeStatus::Active => {
-                // Try to get VM IP
-                let vm_ip = get_vm_ip(&node.ip, &node.hostname).unwrap_or_else(|| "booting...".to_string());
-                ("active".to_string(), vm_ip)
-            }
+        // Compact hardware specs
+        let hw_specs = format!(
+            "{} · {} · {}",
+            truncate(&info.specs.cpu, 20),
+            info.specs.cores.replace(" cores", "c"),
+            info.specs.ram
+        );
+
+        let status_str = match info.status {
+            NodeStatus::Offline => "offline",
+            NodeStatus::Standby => "standby",
+            NodeStatus::Active => "active",
         };
 
-        rows.push(NodeRow {
-            hostname: info.hostname,
-            ip: info.ip,
-            vm_ip,
-            mac: info.mac,
-            status: status_str,
-            cpu: truncate(&info.specs.cpu, 25),
-            cores: info.specs.cores,
-            ram: info.specs.ram,
+        // Add node row
+        rows.push(ListRow {
+            name: node.hostname.clone(),
+            ip: node.ip.clone(),
+            status: status_str.to_string(),
+            specs: hw_specs,
         });
+
+        // If active, add VM row underneath
+        if info.status == NodeStatus::Active {
+            if let Some(vm_info) = get_vm_info(&node.ip) {
+                let vm_specs = format!("{} · {} CPU", vm_info.memory, vm_info.cpus);
+                rows.push(ListRow {
+                    name: format!(" └ {}", vm_info.name),
+                    ip: vm_info.ip,
+                    status: "running".to_string(),
+                    specs: vm_specs,
+                });
+            }
+        }
     }
 
-    let table = Table::new(rows).to_string();
+    let mut table = Table::new(rows);
+    table.with(Style::rounded());
     println!("{}", table);
 
     Ok(())
 }
 
-fn get_vm_ip(host_ip: &str, vm_name: &str) -> Option<String> {
+fn get_vm_info(host_ip: &str) -> Option<VmInfo> {
     let ssh = SshConnection::connect(host_ip).ok()?;
 
-    // First, try to read IP from serial console log (cloud-init prints it)
-    // Format: ci-info: |  ens3  | True |       192.168.1.106       |
-    let log_path = format!("{}/{}.log", vm::VM_RUN_PATH, vm_name);
+    // Get VM name, IP, and specs from running QEMU process
     let output = ssh.execute(&format!(
-        "grep 'ci-info:.*ens.*True' {} 2>/dev/null | sed 's/.*True[^0-9]*\\([0-9.]\\+\\).*/\\1/' | head -1",
-        log_path
+        r#"for pid in {}/*.pid; do
+            [ -f "$pid" ] && kill -0 $(cat "$pid") 2>/dev/null && {{
+                vm=$(basename "$pid" .pid)
+                # Get IP from log
+                ip=$(grep 'ci-info:.*ens.*True' "{}/$vm.log" 2>/dev/null | sed 's/.*True[^0-9]*\([0-9.]\+\).*/\1/' | head -1)
+                # Get memory and cpus from QEMU process args
+                qemu_args=$(cat /proc/$(cat "$pid")/cmdline 2>/dev/null | tr '\0' ' ')
+                mem=$(echo "$qemu_args" | sed -n 's/.*-m \([0-9]*\).*/\1/p')
+                cpus=$(echo "$qemu_args" | sed -n 's/.*-smp \([0-9]*\).*/\1/p')
+                echo "$vm|$ip|$mem|$cpus"
+                exit 0
+            }}
+        done"#,
+        vm::VM_RUN_PATH, vm::VM_RUN_PATH
     )).ok()?;
 
-    let ip = output.trim();
-    if !ip.is_empty() {
-        return Some(ip.to_string());
-    }
-
-    // Fallback: try ARP table lookup after pinging subnet
-    let vm_mac = vm::generate_mac_for_lookup(vm_name);
-
-    // Do a quick ping sweep to populate ARP table
-    let _ = ssh.execute("for i in $(seq 1 254); do ping -c 1 -W 1 192.168.1.$i >/dev/null 2>&1 & done; sleep 2");
-
-    let output = ssh.execute(&format!(
-        "ip neigh show | grep -i '{}' | awk '{{print $1}}' | head -1",
-        vm_mac
-    )).ok()?;
-
-    let ip = output.trim();
-    if ip.is_empty() {
-        None
+    let parts: Vec<&str> = output.trim().split('|').collect();
+    if parts.len() >= 4 && !parts[0].is_empty() {
+        Some(VmInfo {
+            name: parts[0].to_string(),
+            ip: if parts[1].is_empty() { "booting...".to_string() } else { parts[1].to_string() },
+            memory: format!("{}M", parts[2]),
+            cpus: parts[3].to_string(),
+        })
     } else {
-        Some(ip.to_string())
+        None
     }
 }
 
