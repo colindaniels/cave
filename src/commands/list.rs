@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use crate::config::Config;
 use crate::ssh::SshConnection;
-use crate::status::{get_node_info, NodeStatus};
+use crate::status::{get_node_info, DiskInfo, NodeStatus};
 use crate::ui;
 use crate::vm;
 
@@ -64,13 +64,16 @@ pub async fn run() -> Result<()> {
             NodeStatus::Offline => style("offline").red().dim().to_string(),
         };
 
-        // Compact specs
+        // Compact specs with disk info
         let specs = if info.status != NodeStatus::Offline {
+            let disk_info = format_disk_summary(&info.specs.disks);
             format!(
-                "{} {} {}",
+                "{} {} {} {} {}",
                 style(truncate(&info.specs.cpu, 18)).dim(),
                 style("·").dim(),
-                style(format!("{}c/{}", info.specs.cores.replace(" cores", ""), &info.specs.ram)).dim()
+                style(format!("{}c/{}", info.specs.cores.replace(" cores", ""), &info.specs.ram)).dim(),
+                style("·").dim(),
+                style(disk_info).dim()
             )
         } else {
             style("─").dim().to_string()
@@ -174,5 +177,32 @@ fn truncate(s: &str, max_len: usize) -> String {
         s.to_string()
     } else {
         format!("{}...", &s[..max_len - 3])
+    }
+}
+
+fn format_disk_summary(disks: &[DiskInfo]) -> String {
+    if disks.is_empty() {
+        return "no disks".to_string();
+    }
+
+    disks
+        .iter()
+        .map(|d| {
+            let size = format_bytes(d.size_bytes);
+            let dtype = if d.disk_type == "SSD" { "SSD" } else { "HDD" };
+            format!("{} {}", size, dtype)
+        })
+        .collect::<Vec<_>>()
+        .join(" + ")
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const GB: u64 = 1_000_000_000;
+    const TB: u64 = 1_000_000_000_000;
+
+    if bytes >= TB {
+        format!("{:.1}T", bytes as f64 / TB as f64)
+    } else {
+        format!("{}G", bytes / GB)
     }
 }

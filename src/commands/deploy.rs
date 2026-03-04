@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crate::config::Config;
 use crate::ssh::{self, SshConnection};
-use crate::status::{get_node_status, NodeStatus};
+use crate::status::{get_disk_info, get_node_resources, get_node_status, DiskInfo, NodeStatus};
 use crate::ui;
 use crate::vm;
 
@@ -85,36 +85,124 @@ pub async fn run(hostname: Option<&str>, image: Option<&str>) -> Result<()> {
         .default(node.hostname.clone())
         .interact_text()?;
 
-    // Memory selection
-    let memory_options = ["1024 MB (1 GB)", "2048 MB (2 GB)", "4096 MB (4 GB)", "8192 MB (8 GB)", "16384 MB (16 GB)"];
-    let memory_values = [1024u32, 2048, 4096, 8192, 16384];
+    // Connect to node to get disk info and resources
+    let spinner = create_spinner("Checking node resources...");
+    let ssh = SshConnection::connect(&node.ip).context("Failed to connect to node")?;
+    let disks = get_disk_info(&ssh);
+    let (node_ram_mb, node_cpu_cores) = get_node_resources(&ssh);
+    drop(ssh); // Release connection for now
+    spinner.finish_and_clear();
+
+    // Show node resources
+    println!("  {} RAM: {} MB, CPUs: {}",
+        style("Node:").dim(),
+        node_ram_mb,
+        node_cpu_cores
+    );
+
+    // Select disk if multiple available
+    let selected_disk: Option<&DiskInfo> = if disks.is_empty() {
+        ui::print_warning("No disks detected on node - using default storage");
+        None
+    } else if disks.len() == 1 {
+        println!("  {} {} {} ({})",
+            style("Disk:").dim(),
+            disks[0].name,
+            format_disk_size(disks[0].size_bytes),
+            disks[0].disk_type
+        );
+        Some(&disks[0])
+    } else {
+        // Multiple disks - let user choose
+        let disk_names: Vec<String> = disks
+            .iter()
+            .map(|d| format!("{} - {} {} ", d.name, format_disk_size(d.size_bytes), d.disk_type))
+            .collect();
+
+        let disk_idx = FuzzySelect::with_theme(&theme)
+            .with_prompt("Select disk for VM storage")
+            .items(&disk_names)
+            .default(0)
+            .interact()?;
+
+        Some(&disks[disk_idx])
+    };
+
+    // Memory selection - filter by available RAM (reserve ~512MB for host)
+    let available_ram = node_ram_mb.saturating_sub(512);
+    let all_memory_options = [
+        (1024u32, "1024 MB (1 GB)"),
+        (2048, "2048 MB (2 GB)"),
+        (4096, "4096 MB (4 GB)"),
+        (8192, "8192 MB (8 GB)"),
+        (16384, "16384 MB (16 GB)"),
+        (32768, "32768 MB (32 GB)"),
+        (65536, "65536 MB (64 GB)"),
+    ];
+
+    let filtered_memory: Vec<_> = all_memory_options
+        .iter()
+        .filter(|(val, _)| *val <= available_ram)
+        .collect();
+
+    if filtered_memory.is_empty() {
+        ui::print_error(&format!("Node has insufficient RAM ({} MB available)", available_ram));
+        return Ok(());
+    }
+
+    let memory_labels: Vec<&str> = filtered_memory.iter().map(|(_, label)| *label).collect();
+    let memory_values: Vec<u32> = filtered_memory.iter().map(|(val, _)| *val).collect();
+
+    // Default to ~half of available options or 2GB
+    let default_mem_idx = memory_values.iter().position(|&v| v >= 2048).unwrap_or(0);
 
     let memory_idx = FuzzySelect::with_theme(&theme)
         .with_prompt("Memory")
-        .items(&memory_options)
-        .default(1) // Default to 2GB
+        .items(&memory_labels)
+        .default(default_mem_idx)
         .interact()?;
     let memory = memory_values[memory_idx];
 
-    // CPU selection
-    let cpu_options = ["1 CPU", "2 CPUs", "4 CPUs", "8 CPUs"];
-    let cpu_values = [1u32, 2, 4, 8];
+    // CPU selection - filter by available cores
+    let all_cpu_options = [
+        (1u32, "1 CPU"),
+        (2, "2 CPUs"),
+        (4, "4 CPUs"),
+        (8, "8 CPUs"),
+        (16, "16 CPUs"),
+        (32, "32 CPUs"),
+    ];
+
+    let filtered_cpus: Vec<_> = all_cpu_options
+        .iter()
+        .filter(|(val, _)| *val <= node_cpu_cores)
+        .collect();
+
+    if filtered_cpus.is_empty() {
+        ui::print_error("Node has no CPU cores available");
+        return Ok(());
+    }
+
+    let cpu_labels: Vec<&str> = filtered_cpus.iter().map(|(_, label)| *label).collect();
+    let cpu_values: Vec<u32> = filtered_cpus.iter().map(|(val, _)| *val).collect();
+
+    // Default to 2 CPUs or half of available
+    let default_cpu_idx = cpu_values.iter().position(|&v| v >= 2).unwrap_or(0);
 
     let cpu_idx = FuzzySelect::with_theme(&theme)
         .with_prompt("CPUs")
-        .items(&cpu_options)
-        .default(1) // Default to 2 CPUs
+        .items(&cpu_labels)
+        .default(default_cpu_idx)
         .interact()?;
     let cpus = cpu_values[cpu_idx];
 
-    // Disk size selection
-    let disk_options = ["Default (image size)", "10 GB", "20 GB", "50 GB", "100 GB", "200 GB"];
-    let disk_values: [Option<u32>; 6] = [None, Some(10), Some(20), Some(50), Some(100), Some(200)];
+    // Generate disk size options based on selected disk
+    let (disk_options, disk_values) = generate_disk_options(selected_disk);
 
     let disk_idx = FuzzySelect::with_theme(&theme)
         .with_prompt("Disk size")
         .items(&disk_options)
-        .default(2) // Default to 20GB
+        .default(disk_options.len().min(3).saturating_sub(1)) // Default to middle option
         .interact()?;
     let disk_size = disk_values[disk_idx];
 
@@ -500,4 +588,43 @@ fn create_spinner(message: &str) -> ProgressBar {
     spinner.set_message(message.to_string());
     spinner.enable_steady_tick(Duration::from_millis(80));
     spinner
+}
+
+fn format_disk_size(bytes: u64) -> String {
+    const GB: u64 = 1_000_000_000;
+    const TB: u64 = 1_000_000_000_000;
+
+    if bytes >= TB {
+        format!("{:.1} TB", bytes as f64 / TB as f64)
+    } else {
+        format!("{} GB", bytes / GB)
+    }
+}
+
+fn generate_disk_options(disk: Option<&DiskInfo>) -> (Vec<String>, Vec<Option<u32>>) {
+    const GB: u64 = 1_000_000_000;
+
+    let max_gb = disk
+        .map(|d| (d.size_bytes / GB) as u32)
+        .unwrap_or(500); // Default to 500GB max if no disk info
+
+    let mut options = vec!["Default (image size)".to_string()];
+    let mut values: Vec<Option<u32>> = vec![None];
+
+    // Generate options based on available disk size
+    let sizes = [10, 20, 50, 100, 200, 500, 1000];
+    for &size in &sizes {
+        if size <= max_gb {
+            options.push(format!("{} GB", size));
+            values.push(Some(size));
+        }
+    }
+
+    // Add max size option if it's not already in the list
+    if max_gb > 10 && !sizes.contains(&max_gb) && max_gb < 1000 {
+        options.push(format!("{} GB (max)", max_gb));
+        values.push(Some(max_gb));
+    }
+
+    (options, values)
 }

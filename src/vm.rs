@@ -56,7 +56,113 @@ pub fn setup_hypervisor(ssh: &SshConnection) -> Result<()> {
     // Set up bridged networking
     setup_bridge(ssh)?;
 
+    // Set up VM auto-start service
+    setup_autostart(ssh)?;
+
     println!("  Hypervisor ready");
+    Ok(())
+}
+
+/// Set up auto-start service for VMs on boot
+fn setup_autostart(ssh: &SshConnection) -> Result<()> {
+    // Create the startup script
+    let startup_script = r#"#!/bin/sh
+# Cave VM auto-start script
+# Starts all VMs with saved configurations
+
+VM_PATH="/var/lib/cave"
+RUN_PATH="/var/run/cave"
+
+# Ensure directories exist
+mkdir -p "$RUN_PATH"
+
+# Wait for network bridge to be ready
+sleep 2
+
+# Start each VM that has a config file
+for conf in "$VM_PATH"/*.conf; do
+    [ -f "$conf" ] || continue
+
+    # Source the config
+    . "$conf"
+
+    # Check if disk exists
+    [ -f "$DISK_PATH" ] || continue
+
+    # Check if already running
+    PID_FILE="$RUN_PATH/$VM_NAME.pid"
+    if [ -f "$PID_FILE" ] && kill -0 $(cat "$PID_FILE") 2>/dev/null; then
+        echo "VM $VM_NAME already running"
+        continue
+    fi
+
+    echo "Starting VM: $VM_NAME"
+
+    # Build seed drive option if seed ISO exists
+    SEED_DRIVE=""
+    if [ -n "$SEED_ISO" ] && [ -f "$SEED_ISO" ]; then
+        SEED_DRIVE="-drive file=$SEED_ISO,format=raw,if=virtio,readonly=on"
+    fi
+
+    # Determine acceleration
+    ACCEL=""
+    [ -e /dev/kvm ] && ACCEL="-enable-kvm"
+
+    # Generate MAC from VM name (simple hash)
+    MAC=$(echo -n "$VM_NAME" | md5sum | sed 's/^\(..\)\(..\)\(..\)\(..\)\(..\).*$/02:\1:\2:\3:\4:\5/')
+
+    # Start the VM
+    qemu-system-x86_64 \
+        $ACCEL \
+        -m "$MEMORY_MB" \
+        -smp "$CPUS" \
+        -cpu host \
+        -drive "file=$DISK_PATH,format=qcow2,if=virtio" \
+        $SEED_DRIVE \
+        -netdev bridge,id=net0,br=br0 \
+        -device "virtio-net-pci,netdev=net0,mac=$MAC" \
+        -serial "file:$RUN_PATH/$VM_NAME.log" \
+        -display none \
+        -daemonize \
+        -pidfile "$PID_FILE" \
+        -qmp "unix:$RUN_PATH/$VM_NAME.sock,server,nowait"
+
+    if [ $? -eq 0 ]; then
+        echo "  Started $VM_NAME"
+    else
+        echo "  Failed to start $VM_NAME"
+    fi
+done
+"#;
+
+    // Write the startup script
+    let _ = ssh.execute(&format!(
+        "cat > /usr/local/bin/cave-autostart << 'SCRIPT'\n{}SCRIPT\nchmod +x /usr/local/bin/cave-autostart",
+        startup_script
+    ));
+
+    // Create OpenRC init script
+    let init_script = r#"#!/sbin/openrc-run
+
+name="cave-vms"
+description="Cave VM Auto-start"
+command="/usr/local/bin/cave-autostart"
+command_background="no"
+
+depend() {
+    need net
+    after bridge
+}
+"#;
+
+    let _ = ssh.execute(&format!(
+        "cat > /etc/init.d/cave-vms << 'INIT'\n{}INIT\nchmod +x /etc/init.d/cave-vms",
+        init_script
+    ));
+
+    // Enable the service
+    let _ = ssh.execute("rc-update add cave-vms default 2>/dev/null || true");
+
     Ok(())
 }
 
@@ -232,6 +338,15 @@ pub fn start_vm(
         anyhow::bail!("VM started but is not running - check logs");
     }
 
+    // Save VM config for auto-start on reboot
+    let seed_path_str = seed_iso_path.unwrap_or("");
+    let config_content = format!(
+        "VM_NAME={}\nMEMORY_MB={}\nCPUS={}\nDISK_PATH={}\nSEED_ISO={}\n",
+        vm_name, memory_mb, cpus, disk_path, seed_path_str
+    );
+    let config_path = format!("{}/{}.conf", VM_IMAGES_PATH, vm_name);
+    let _ = ssh.execute(&format!("cat > {} << 'EOF'\n{}EOF", config_path, config_content));
+
     println!("  VM '{}' started", vm_name);
     Ok(())
 }
@@ -325,16 +440,18 @@ pub fn get_vm_info(ssh: &SshConnection, vm_name: &str) -> Result<Option<VmInfo>>
     }))
 }
 
-/// Delete a VM (stop if running and remove disk)
+/// Delete a VM (stop if running and remove disk, config, and seed ISO)
 pub fn delete_vm(ssh: &SshConnection, vm_name: &str) -> Result<()> {
     // Stop if running
     if is_vm_running(ssh, vm_name)? {
         stop_vm(ssh, vm_name)?;
     }
 
-    // Remove disk
+    // Remove disk, config, and seed ISO
     let disk_path = format!("{}/{}.qcow2", VM_IMAGES_PATH, vm_name);
-    let _ = ssh.execute(&format!("rm -f {}", disk_path));
+    let config_path = format!("{}/{}.conf", VM_IMAGES_PATH, vm_name);
+    let seed_path = format!("{}/{}-seed.iso", VM_IMAGES_PATH, vm_name);
+    let _ = ssh.execute(&format!("rm -f {} {} {}", disk_path, config_path, seed_path));
 
     println!("  VM '{}' deleted", vm_name);
     Ok(())
