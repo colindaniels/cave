@@ -1,5 +1,5 @@
 #!/bin/sh
-# Cave VM Watcher - auto-starts VMs on standby nodes
+# Cave VM Watcher - auto-starts VMs, updates IP cache and SSH config
 CAVE="/home/colindaniels/cave/target/release/cave"
 VMS_DIR="/home/colindaniels/cave/vms"
 LOG="/home/colindaniels/cave/watcher.log"
@@ -11,6 +11,9 @@ log() {
 log "Watcher started, configs in $VMS_DIR"
 
 while true; do
+    # Poll network to update IP cache and SSH config
+    "$CAVE" poll 2>/dev/null
+
     for conf in "$VMS_DIR"/*.conf; do
         [ -f "$conf" ] || continue
         hostname=$(basename "$conf" .conf)

@@ -364,11 +364,11 @@ fn start_vm_watcher() -> Result<u32> {
     let cave_bin = std::env::current_exe()
         .unwrap_or_else(|_| std::path::PathBuf::from("cave"));
 
-    // Simple watcher that calls `cave watcher-start <hostname>` for each config
+    // Simple watcher that calls `cave poll` and `cave watcher-start <hostname>` for each config
     // This uses the exact same code path as deploy
     let watcher_script = format!(
         r#"#!/bin/sh
-# Cave VM Watcher - auto-starts VMs on standby nodes
+# Cave VM Watcher - auto-starts VMs, updates IP cache and SSH config
 CAVE="{cave_bin}"
 VMS_DIR="{vms_dir}"
 LOG="{log}"
@@ -380,6 +380,9 @@ log() {{
 log "Watcher started, configs in $VMS_DIR"
 
 while true; do
+    # Poll network to update IP cache and SSH config
+    "$CAVE" poll 2>/dev/null
+
     for conf in "$VMS_DIR"/*.conf; do
         [ -f "$conf" ] || continue
         hostname=$(basename "$conf" .conf)

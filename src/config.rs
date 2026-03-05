@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use serde_json;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -93,8 +94,80 @@ pub fn scan_network() -> HashMap<String, String> {
 
 /// Scan network to find IP for a given MAC address
 pub fn scan_for_ip(mac: &str) -> Option<String> {
+    // Try cache first
+    let cache = load_ip_cache();
+    if let Some(ip) = cache.get(&mac.to_lowercase()) {
+        return Some(ip.clone());
+    }
+    // Fall back to scan
     let results = scan_network();
     results.get(&mac.to_lowercase()).cloned()
+}
+
+/// Load IP cache from file (MAC -> IP mapping)
+pub fn load_ip_cache() -> HashMap<String, String> {
+    let cache_path = Config::cave_dir().join("ip_cache.json");
+    if let Ok(content) = fs::read_to_string(&cache_path) {
+        if let Ok(cache) = serde_json::from_str(&content) {
+            return cache;
+        }
+    }
+    HashMap::new()
+}
+
+/// Save IP cache to file
+pub fn save_ip_cache(cache: &HashMap<String, String>) -> Result<()> {
+    let cache_path = Config::cave_dir().join("ip_cache.json");
+    let content = serde_json::to_string_pretty(cache)?;
+    fs::write(&cache_path, content)?;
+    Ok(())
+}
+
+/// Cached node information for instant cave list
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CachedNode {
+    pub hostname: String,
+    pub mac: String,
+    pub ip: Option<String>,
+    pub status: String,  // "active", "standby", "offline"
+    pub cpu: String,
+    pub cores: String,
+    pub ram: String,
+    pub disks: Vec<CachedDisk>,
+    pub vm: Option<CachedVm>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CachedDisk {
+    pub size_bytes: u64,
+    pub disk_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CachedVm {
+    pub name: String,
+    pub ip: String,
+    pub memory: String,
+    pub cpus: String,
+}
+
+/// Load full node cache
+pub fn load_node_cache() -> Vec<CachedNode> {
+    let cache_path = Config::cave_dir().join("node_cache.json");
+    if let Ok(content) = fs::read_to_string(&cache_path) {
+        if let Ok(cache) = serde_json::from_str(&content) {
+            return cache;
+        }
+    }
+    Vec::new()
+}
+
+/// Save full node cache
+pub fn save_node_cache(cache: &[CachedNode]) -> Result<()> {
+    let cache_path = Config::cave_dir().join("node_cache.json");
+    let content = serde_json::to_string_pretty(cache)?;
+    fs::write(&cache_path, content)?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

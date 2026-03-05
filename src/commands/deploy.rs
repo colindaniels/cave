@@ -284,6 +284,12 @@ pub async fn run(hostname: Option<&str>, image: Option<&str>) -> Result<()> {
     spinner.finish_and_clear();
     ui::print_success("Connected");
 
+    // Update SSH config with current IP
+    let _ = ssh::update_ssh_config(&node.hostname, &node_ip);
+
+    // Enable Wake-on-LAN so node can be woken after shutdown
+    let _ = ssh::enable_wol(&ssh);
+
     // Set up hypervisor
     let spinner = create_spinner("Setting up hypervisor...");
     vm::setup_hypervisor(&ssh)?;

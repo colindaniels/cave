@@ -7,7 +7,7 @@ mod ui;
 mod vm;
 
 use clap::{Parser, Subcommand};
-use commands::{deploy, destroy, http_serve, images, init, list, remove, server, watcher_start};
+use commands::{deploy, destroy, http_serve, images, init, list, poll, remove, server, shutdown, wake, watcher_start};
 
 #[derive(Parser)]
 #[command(name = "cave")]
@@ -54,6 +54,16 @@ enum Commands {
         /// Hostname of the node
         hostname: String,
     },
+    /// Send Wake-on-LAN packet to a node
+    Wake {
+        /// Hostname of the node to wake
+        hostname: String,
+    },
+    /// Gracefully shut down a node (opposite of wake)
+    Shutdown {
+        /// Hostname of the node to shut down
+        hostname: String,
+    },
     /// List local images
     Images,
     /// Image management commands
@@ -78,6 +88,9 @@ enum Commands {
         /// Directory to serve
         dir: String,
     },
+    /// Internal: Background poll for IP cache and SSH config (used by watcher)
+    #[command(hide = true)]
+    Poll,
 }
 
 #[derive(Subcommand)]
@@ -134,6 +147,8 @@ async fn main() -> anyhow::Result<()> {
             destroy::run(&hostname, vm_name).await?
         },
         Commands::Remove { hostname } => remove::run(&hostname).await?,
+        Commands::Wake { hostname } => wake::run(&hostname).await?,
+        Commands::Shutdown { hostname } => shutdown::run(&hostname).await?,
         Commands::Images => images::list().await?,
         Commands::Image { action } => match action {
             ImageAction::Pull { url } => images::pull(&url).await?,
@@ -142,6 +157,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Tui => tui::run()?,
         Commands::WatcherStart { hostname } => watcher_start::run(&hostname).await?,
         Commands::HttpServe { port, dir } => http_serve::run(port, &dir).await?,
+        Commands::Poll => poll::run().await?,
     }
 
     Ok(())

@@ -71,24 +71,45 @@ pub fn update_ssh_config(hostname: &str, ip: &str) -> Result<()> {
         String::new()
     };
 
-    // Check if host already exists
-    if existing.contains(&format!("Host {}\n", hostname)) {
-        println!("SSH config entry for '{}' already exists", hostname);
-        return Ok(());
-    }
-
     // Ensure .ssh directory exists
     if let Some(parent) = ssh_config_path.parent() {
         fs::create_dir_all(parent).context("Failed to create .ssh directory")?;
     }
 
-    // Append new entry
-    let new_content = format!("{}{}", existing, host_entry);
+    // Remove existing entry if present, then add new one
+    let cleaned = remove_cave_entry(&existing, hostname);
+    let new_content = format!("{}{}", cleaned, host_entry);
     fs::write(&ssh_config_path, new_content)
         .context("Failed to write SSH config")?;
 
-    println!("Added SSH config entry for '{}'", hostname);
     Ok(())
+}
+
+fn remove_cave_entry(content: &str, hostname: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut new_lines: Vec<&str> = Vec::new();
+    let mut skip_until_next_host = false;
+
+    for line in &lines {
+        if line.starts_with("# Cave managed node:") && line.contains(hostname) {
+            skip_until_next_host = true;
+            continue;
+        }
+        if skip_until_next_host {
+            if (line.starts_with("Host ") || line.starts_with("# ")) && !line.contains(hostname) {
+                skip_until_next_host = false;
+            } else if line.trim().is_empty() {
+                continue;
+            } else {
+                continue;
+            }
+        }
+        if !skip_until_next_host {
+            new_lines.push(line);
+        }
+    }
+
+    new_lines.join("\n")
 }
 
 pub fn remove_ssh_config(hostname: &str) -> Result<()> {
@@ -227,6 +248,24 @@ impl SshConnection {
 
 pub fn can_connect(ip: &str) -> bool {
     SshConnection::connect(ip).is_ok()
+}
+
+/// Enable Wake-on-LAN on the node's network interface
+/// This must be called after boot for WoL to work on shutdown
+pub fn enable_wol(ssh: &SshConnection) -> Result<()> {
+    // Install ethtool if needed and enable WoL on eth0
+    let cmd = r#"
+        if ! which ethtool >/dev/null 2>&1; then
+            apk add --no-cache ethtool >/dev/null 2>&1
+        fi
+        # Find the main ethernet interface (not lo, not br*, not tap*)
+        iface=$(ip -o link show | awk -F': ' '$2 !~ /^(lo|br|tap|veth)/ {print $2; exit}')
+        if [ -n "$iface" ]; then
+            ethtool -s "$iface" wol g 2>/dev/null || true
+        fi
+    "#;
+    ssh.execute(cmd)?;
+    Ok(())
 }
 
 pub fn scp_file(ip: &str, local_path: &Path, remote_path: &str) -> Result<()> {

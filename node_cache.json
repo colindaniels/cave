@@ -1,0 +1,27 @@
+[
+  {
+    "hostname": "mercury1",
+    "mac": "7c:83:34:bb:91:e2",
+    "ip": "192.168.1.11",
+    "status": "active",
+    "cpu": "Intel(R) N95",
+    "cores": "4 cores",
+    "ram": "7.5G",
+    "disks": [
+      {
+        "size_bytes": 1000204886016,
+        "disk_type": "SSD"
+      },
+      {
+        "size_bytes": 256060514304,
+        "disk_type": "SSD"
+      }
+    ],
+    "vm": {
+      "name": "mercury1",
+      "ip": "192.168.1.136",
+      "memory": "2048M",
+      "cpus": "2"
+    }
+  }
+]

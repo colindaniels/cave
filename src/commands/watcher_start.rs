@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::fs;
 
 use crate::config::Config;
-use crate::ssh::SshConnection;
+use crate::ssh::{self, SshConnection};
 use crate::vm;
 
 /// Start a VM on a node (called by watcher after node reboots)
@@ -51,6 +51,9 @@ pub async fn run(hostname: &str) -> Result<()> {
         Ok(s) => s,
         Err(_) => return Ok(()), // Node not reachable
     };
+
+    // Enable Wake-on-LAN so node can be woken after shutdown
+    let _ = ssh::enable_wol(&ssh);
 
     // Check if VM is already running
     if vm::is_vm_running(&ssh, &vm_name)? {
