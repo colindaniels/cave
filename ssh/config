@@ -1,4 +1,11 @@
 # Cave managed SSH hosts
+# Cave managed node: mercury2
+Host mercury2
+    HostName 192.168.1.12
+    User root
+    IdentityFile /home/colindaniels/cave/ssh/cave
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
 # Cave managed node: mercury1
 Host mercury1
     HostName 192.168.1.11

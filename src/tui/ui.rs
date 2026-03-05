@@ -837,19 +837,14 @@ fn draw_help_overlay(f: &mut Frame) {
     let lines = vec![
         Line::from(""),
         Line::from(Span::styled(" Navigation", Style::default().fg(MAUVE).add_modifier(Modifier::BOLD))),
-        Line::from(vec![Span::styled("  j/k or arrows  ", Style::default().fg(BLUE)), Span::styled("Move up/down", Style::default().fg(TEXT))]),
-        Line::from(""),
-        Line::from(Span::styled(" Node Actions", Style::default().fg(MAUVE).add_modifier(Modifier::BOLD))),
-        Line::from(vec![Span::styled("  d / Enter      ", Style::default().fg(BLUE)), Span::styled("Deploy VM", Style::default().fg(TEXT))]),
-        Line::from(vec![Span::styled("  x              ", Style::default().fg(BLUE)), Span::styled("Destroy VM", Style::default().fg(TEXT))]),
-        Line::from(vec![Span::styled("  w              ", Style::default().fg(BLUE)), Span::styled("Wake (WoL)", Style::default().fg(TEXT))]),
-        Line::from(vec![Span::styled("  s              ", Style::default().fg(BLUE)), Span::styled("Shutdown", Style::default().fg(TEXT))]),
-        Line::from(vec![Span::styled("  r              ", Style::default().fg(BLUE)), Span::styled("Restart", Style::default().fg(TEXT))]),
+        Line::from(vec![Span::styled("  j/k or ↑/↓     ", Style::default().fg(BLUE)), Span::styled("Move up/down", Style::default().fg(TEXT))]),
+        Line::from(vec![Span::styled("  Enter          ", Style::default().fg(BLUE)), Span::styled("Node actions menu", Style::default().fg(TEXT))]),
         Line::from(""),
         Line::from(Span::styled(" General", Style::default().fg(MAUVE).add_modifier(Modifier::BOLD))),
         Line::from(vec![Span::styled("  n              ", Style::default().fg(BLUE)), Span::styled("Add new node", Style::default().fg(TEXT))]),
         Line::from(vec![Span::styled("  i              ", Style::default().fg(BLUE)), Span::styled("Download images", Style::default().fg(TEXT))]),
-        Line::from(vec![Span::styled("  R              ", Style::default().fg(BLUE)), Span::styled("Refresh", Style::default().fg(TEXT))]),
+        Line::from(vec![Span::styled("  r              ", Style::default().fg(BLUE)), Span::styled("Refresh", Style::default().fg(TEXT))]),
+        Line::from(vec![Span::styled("  ?              ", Style::default().fg(BLUE)), Span::styled("Help", Style::default().fg(TEXT))]),
         Line::from(vec![Span::styled("  q              ", Style::default().fg(BLUE)), Span::styled("Quit", Style::default().fg(TEXT))]),
     ];
 
@@ -887,6 +882,17 @@ fn draw_server_panel(f: &mut Frame, app: &App, area: Rect) {
         Span::styled("Stopped", Style::default().fg(RED).add_modifier(Modifier::BOLD))
     };
 
+    // Show CLI command hint based on status
+    let server_hint = if app.pxe_running {
+        Line::from(vec![
+            Span::styled(" sudo cave server stop", Style::default().fg(SUBTEXT)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(" sudo cave server start", Style::default().fg(SUBTEXT)),
+        ])
+    };
+
     let lines = vec![
         Line::from(""),
         Line::from(Span::styled("── PXE Server ──", Style::default().fg(MAUVE))),
@@ -899,6 +905,7 @@ fn draw_server_panel(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(" Port    ", Style::default().fg(SUBTEXT)),
             Span::styled(format!("{}", app.http_port), Style::default().fg(TEXT)),
         ]),
+        server_hint,
         Line::from(""),
         Line::from(Span::styled("── Poller ──", Style::default().fg(MAUVE))),
         Line::from(""),
@@ -907,10 +914,11 @@ fn draw_server_panel(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(&refresh_text, Style::default().fg(TEXT)),
         ]),
         Line::from(""),
-        Line::from(Span::styled("── Paths ──", Style::default().fg(MAUVE))),
+        Line::from(Span::styled("── Controls ──", Style::default().fg(MAUVE))),
         Line::from(""),
         Line::from(vec![
-            Span::styled(" ~/cave", Style::default().fg(SUBTEXT)),
+            Span::styled(" [r]", Style::default().fg(BLUE)),
+            Span::styled(" refresh", Style::default().fg(SUBTEXT)),
         ]),
     ];
 

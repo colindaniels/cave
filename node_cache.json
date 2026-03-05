@@ -26,12 +26,19 @@
   {
     "hostname": "mercury2",
     "mac": "7c:83:34:bb:93:a9",
-    "ip": null,
-    "status": "offline",
-    "cpu": "N/A",
-    "cores": "N/A",
-    "ram": "N/A",
-    "disks": [],
+    "ip": "192.168.1.12",
+    "status": "standby",
+    "cpu": "Intel(R) N95",
+    "cores": "4 cores",
+    "ram": "7.5G",
+    "disks": [
+      {
+        "name": "nvme0n1",
+        "size_bytes": 256060514304,
+        "disk_type": "SSD",
+        "model": "256GB SSD"
+      }
+    ],
     "vm": null
   }
 ]

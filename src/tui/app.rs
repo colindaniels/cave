@@ -157,12 +157,18 @@ impl App {
 
     fn check_server_status() -> (bool, u16) {
         // Check if pixiecore is running
+        // PID file format: "pixiecore_pid\nhttp_pid"
         let pid_file = Config::pixiecore_pid_file();
         let pxe_running = if pid_file.exists() {
-            if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
-                if let Ok(pid) = pid_str.trim().parse::<i32>() {
-                    // Check if process exists
-                    std::path::Path::new(&format!("/proc/{}", pid)).exists()
+            if let Ok(content) = std::fs::read_to_string(&pid_file) {
+                // First line is pixiecore PID
+                if let Some(first_line) = content.lines().next() {
+                    if let Ok(pid) = first_line.trim().parse::<i32>() {
+                        // Check if process exists
+                        std::path::Path::new(&format!("/proc/{}", pid)).exists()
+                    } else {
+                        false
+                    }
                 } else {
                     false
                 }
@@ -265,12 +271,16 @@ impl App {
             return MEMORY_OPTIONS.len() - 1;
         };
 
-        // Parse RAM string (e.g., "16GB", "8192MB")
+        // Parse RAM string (e.g., "7.5G", "16GB", "8192MB", "8192M")
         let ram_str = node.ram.to_uppercase();
         let ram_mb: u64 = if ram_str.contains("GB") {
-            ram_str.replace("GB", "").trim().parse::<u64>().unwrap_or(0) * 1024
+            ram_str.replace("GB", "").trim().parse::<f64>().unwrap_or(0.0) as u64 * 1024
+        } else if ram_str.ends_with("G") {
+            ram_str.trim_end_matches('G').trim().parse::<f64>().unwrap_or(0.0) as u64 * 1024
         } else if ram_str.contains("MB") {
             ram_str.replace("MB", "").trim().parse::<u64>().unwrap_or(0)
+        } else if ram_str.ends_with("M") {
+            ram_str.trim_end_matches('M').trim().parse::<u64>().unwrap_or(0)
         } else {
             ram_str.trim().parse::<u64>().unwrap_or(0)
         };
@@ -287,7 +297,13 @@ impl App {
             return CPU_OPTIONS.len() - 1;
         };
 
-        let cores: u32 = node.cores.parse().unwrap_or(1);
+        // Parse cores string (e.g., "4 cores", "4")
+        let cores_str = node.cores.to_lowercase();
+        let cores: u32 = cores_str
+            .split_whitespace()
+            .next()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1);
 
         CPU_OPTIONS.iter()
             .rposition(|(c, _)| *c <= cores)
@@ -379,8 +395,9 @@ impl App {
                 self.overlay = Overlay::ImageDownload;
             }
 
-            // Refresh
-            KeyCode::Char('R') => {
+            // Refresh / poll
+            KeyCode::Char('r') => {
+                let _ = Command::new("cave").args(["poll"]).output();
                 self.refresh_data();
                 self.set_status("Refreshed");
             }
@@ -785,6 +802,7 @@ impl App {
             .args(["image", "pull", url])
             .spawn();
     }
+
 }
 
 // ============================================================================
@@ -803,8 +821,8 @@ pub fn run() -> Result<()> {
     let tick_rate = Duration::from_millis(100);
     let mut last_tick = Instant::now();
 
-    // Auto-refresh every 30 seconds
-    let refresh_interval = Duration::from_secs(30);
+    // Auto-refresh (poll) every 10 seconds
+    let refresh_interval = Duration::from_secs(10);
 
     loop {
         terminal.draw(|f| ui::draw(f, &app))?;
@@ -832,8 +850,10 @@ pub fn run() -> Result<()> {
             }
         }
 
-        // Auto-refresh
+        // Auto-refresh (run poll in background)
         if app.last_refresh.elapsed() >= refresh_interval {
+            // Run poll in background to update cache
+            let _ = Command::new("cave").args(["poll"]).spawn();
             app.refresh_data();
         }
 
