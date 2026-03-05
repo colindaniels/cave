@@ -2,10 +2,86 @@ use anyhow::Result;
 
 use crate::ssh::SshConnection;
 
-/// Path where VM disk images are stored on the node
-pub const VM_IMAGES_PATH: &str = "/var/lib/cave";
-/// Path for VM PID files
+/// Path where VM disk images are stored on the node (mounted SSD)
+pub const VM_IMAGES_PATH: &str = "/mnt/cave";
+/// Path for VM PID files (RAM is fine for these)
 pub const VM_RUN_PATH: &str = "/var/run/cave";
+
+/// Mount a disk for persistent VM storage (wipes and formats if needed)
+pub fn mount_storage(ssh: &SshConnection, disk_name: &str) -> Result<()> {
+    // Create mount point
+    let _ = ssh.execute(&format!("mkdir -p {}", VM_IMAGES_PATH));
+
+    // Check if already mounted
+    let (_, status) = ssh.execute_with_status(&format!("mountpoint -q {}", VM_IMAGES_PATH))?;
+    if status == 0 {
+        return Ok(()); // Already mounted
+    }
+
+    // Load ext4 module and install tools (needed on Alpine)
+    let _ = ssh.execute("modprobe ext4 2>/dev/null; apk add --no-cache e2fsprogs >/dev/null 2>&1");
+
+    // First, look for an existing ext4 partition on this disk (preserves VM data across reboots)
+    let (ext4_part, _) = ssh.execute_with_status(&format!(
+        r#"for p in /dev/{}*; do
+            if [ -b "$p" ] && blkid -o value -s TYPE "$p" 2>/dev/null | grep -q ext4; then
+                echo "$p"
+                break
+            fi
+        done"#,
+        disk_name
+    ))?;
+
+    if !ext4_part.trim().is_empty() {
+        // Found existing ext4 partition, mount it
+        let disk_path = ext4_part.trim();
+        let (_, mount_status) = ssh.execute_with_status(&format!(
+            "mount {} {}",
+            disk_path, VM_IMAGES_PATH
+        ))?;
+        if mount_status == 0 {
+            return Ok(());
+        }
+    }
+
+    // No ext4 partition found - find the largest partition to format
+    let (largest_part, _) = ssh.execute_with_status(&format!(
+        r#"ls /dev/{}* 2>/dev/null | grep -E '{}p?[0-9]+$' | while read p; do
+            size=$(cat /sys/class/block/$(basename $p)/size 2>/dev/null || echo 0)
+            echo "$size $p"
+        done | sort -rn | head -1 | awk '{{print $2}}'"#,
+        disk_name, disk_name
+    ))?;
+
+    let disk_path = if largest_part.trim().is_empty() {
+        format!("/dev/{}", disk_name)
+    } else {
+        largest_part.trim().to_string()
+    };
+
+    // Wipe and format as ext4
+    println!("  Formatting {} as ext4...", disk_path);
+    let (output, mkfs_status) = ssh.execute_with_status(&format!(
+        "dd if=/dev/zero of={} bs=1M count=10 2>/dev/null; mkfs.ext4 -F {}",
+        disk_path, disk_path
+    ))?;
+
+    if mkfs_status != 0 {
+        anyhow::bail!("Failed to format disk {}: {}", disk_path, output);
+    }
+
+    // Mount it
+    let (_, mount_status) = ssh.execute_with_status(&format!(
+        "mount {} {}",
+        disk_path, VM_IMAGES_PATH
+    ))?;
+
+    if mount_status != 0 {
+        anyhow::bail!("Failed to mount storage disk {}", disk_path);
+    }
+
+    Ok(())
+}
 
 /// Set up the Alpine host as a hypervisor (install QEMU, configure bridge)
 pub fn setup_hypervisor(ssh: &SshConnection) -> Result<()> {
@@ -348,6 +424,89 @@ pub fn start_vm(
     let _ = ssh.execute(&format!("cat > {} << 'EOF'\n{}EOF", config_path, config_content));
 
     println!("  VM '{}' started", vm_name);
+    Ok(())
+}
+
+/// Start a VM with a specific MAC address (for watcher restarts)
+pub fn start_vm_with_mac(
+    ssh: &SshConnection,
+    vm_name: &str,
+    disk_path: &str,
+    seed_iso_path: Option<&str>,
+    memory_mb: u32,
+    cpus: u32,
+    _disk_size_gb: Option<u32>,
+    mac: &str,
+) -> Result<()> {
+    let pid_file = format!("{}/{}.pid", VM_RUN_PATH, vm_name);
+    let qmp_socket = format!("{}/{}.sock", VM_RUN_PATH, vm_name);
+    let serial_log = format!("{}/{}.log", VM_RUN_PATH, vm_name);
+
+    // Ensure run directory exists
+    let _ = ssh.execute(&format!("mkdir -p {}", VM_RUN_PATH));
+
+    // Check if VM is already running
+    if is_vm_running(ssh, vm_name)? {
+        return Ok(()); // Already running, nothing to do
+    }
+
+    // Determine if KVM is available
+    let (_, kvm_status) = ssh.execute_with_status("test -e /dev/kvm")?;
+    let accel = if kvm_status == 0 { "-enable-kvm" } else { "" };
+
+    // Build cloud-init seed ISO drive if provided
+    let seed_drive = if let Some(seed_path) = seed_iso_path {
+        format!("-drive file={},format=raw,if=virtio,readonly=on", seed_path)
+    } else {
+        String::new()
+    };
+
+    // Use provided MAC, or generate if empty
+    let mac_addr = if mac.is_empty() {
+        generate_mac(vm_name)
+    } else {
+        mac.to_string()
+    };
+
+    // Build QEMU command
+    let qemu_cmd = format!(
+        r#"qemu-system-x86_64 \
+            {} \
+            -m {} \
+            -smp {} \
+            -cpu host \
+            -drive file={},format=qcow2,if=virtio \
+            {} \
+            -netdev bridge,id=net0,br=br0 \
+            -device virtio-net-pci,netdev=net0,mac={} \
+            -serial file:{} \
+            -display none \
+            -daemonize \
+            -pidfile {} \
+            -qmp unix:{},server,nowait"#,
+        accel,
+        memory_mb,
+        cpus,
+        disk_path,
+        seed_drive,
+        mac_addr,
+        serial_log,
+        pid_file,
+        qmp_socket
+    );
+
+    let (output, status) = ssh.execute_with_status(&qemu_cmd)?;
+
+    if status != 0 {
+        anyhow::bail!("Failed to start VM: {}", output);
+    }
+
+    // Verify it's running
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    if !is_vm_running(ssh, vm_name)? {
+        anyhow::bail!("VM started but is not running - check logs");
+    }
+
     Ok(())
 }
 

@@ -6,6 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::commands::images::get_image_display_name;
 use crate::config::Config;
 use crate::ssh::{self, SshConnection};
 use crate::status::{get_disk_info, get_node_resources, get_node_status, DiskInfo, NodeStatus};
@@ -67,7 +68,16 @@ pub async fn run(hostname: Option<&str>, image: Option<&str>) -> Result<()> {
         // Interactive image selection
         let image_names: Vec<String> = images
             .iter()
-            .map(|(name, size)| format!("{} ({})", name, ui::format_size(*size)))
+            .map(|(name, size)| {
+                let display_name = get_image_display_name(name);
+                if display_name == *name {
+                    // Not a known cloud image, show filename with size
+                    format!("{} ({})", name, ui::format_size(*size))
+                } else {
+                    // Known cloud image, show friendly name (already includes size info)
+                    display_name
+                }
+            })
             .collect();
 
         let selection = FuzzySelect::with_theme(&theme)
@@ -256,6 +266,10 @@ pub async fn run(hostname: Option<&str>, image: Option<&str>) -> Result<()> {
         }
     }
 
+    // Remove existing VM config so watcher doesn't restart VM during deployment
+    let vm_config_path = Config::vms_dir().join(format!("{}.conf", node.hostname));
+    let _ = fs::remove_file(&vm_config_path);
+
     // Connect via SSH
     let spinner = create_spinner(&format!("Connecting to {}...", node.ip));
     let ssh = SshConnection::connect(&node.ip).context("Failed to connect via SSH")?;
@@ -267,6 +281,15 @@ pub async fn run(hostname: Option<&str>, image: Option<&str>) -> Result<()> {
     vm::setup_hypervisor(&ssh)?;
     spinner.finish_and_clear();
     ui::print_success("Hypervisor ready");
+
+    // Mount storage disk
+    let disk_name = selected_disk.map(|d| d.name.clone());
+    if let Some(ref name) = disk_name {
+        let spinner = create_spinner(&format!("Mounting storage ({})...", name));
+        vm::mount_storage(&ssh, name)?;
+        spinner.finish_and_clear();
+        ui::print_success("Storage mounted");
+    }
 
     // Stop existing VM if running
     if vm::is_vm_running(&ssh, &vm_name)? {
@@ -338,6 +361,20 @@ pub async fn run(hostname: Option<&str>, image: Option<&str>) -> Result<()> {
     spinner.finish_and_clear();
     ui::print_success("VM started");
 
+    // Save VM config on server for auto-start after node reboots
+    let vms_dir = Config::vms_dir();
+    fs::create_dir_all(&vms_dir)?;
+    let vm_config_path = vms_dir.join(format!("{}.conf", node.hostname));
+    let remote_seed_str = remote_seed_path.as_deref().unwrap_or("");
+    let disk_name_str = disk_name.as_deref().unwrap_or("");
+    let mac_addr = vm::generate_mac_for_lookup(&vm_name);
+    let vm_config = format!(
+        "NODE_IP={}\nVM_NAME={}\nMEMORY_MB={}\nCPUS={}\nDISK_PATH={}\nSEED_ISO={}\nDISK_NAME={}\nMAC={}\n",
+        node.ip, vm_name, memory, cpus, remote_image_path, remote_seed_str, disk_name_str, mac_addr
+    );
+    fs::write(&vm_config_path, &vm_config)?;
+    ui::print_success("VM config saved");
+
     // Success message
     ui::print_completion("Deployment Complete");
 
@@ -374,8 +411,12 @@ fn get_available_images() -> Result<Vec<(String, u64)>> {
         let path = entry.path();
         if path.is_file() {
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                // Skip seed ISOs
-                if name.ends_with("-seed.iso") || name.ends_with("-seed") {
+                // Skip seed ISOs and VM disk images
+                if name.ends_with("-seed.iso")
+                    || name.ends_with("-seed")
+                    || name.contains(".cave.")
+                    || name.ends_with(".qcow2")
+                {
                     continue;
                 }
                 let size = fs::metadata(&path)?.len();

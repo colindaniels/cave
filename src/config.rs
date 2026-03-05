@@ -81,6 +81,10 @@ impl Config {
         Self::cave_dir().join("server.log")
     }
 
+    pub fn vms_dir() -> PathBuf {
+        Self::cave_dir().join("vms")
+    }
+
     pub fn load() -> Result<Self> {
         let config_path = Self::config_path();
         if config_path.exists() {

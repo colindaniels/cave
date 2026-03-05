@@ -143,15 +143,17 @@ fn get_vm_info(host_ip: &str) -> Option<VmInfo> {
             r#"for pid in {}/*.pid; do
             [ -f "$pid" ] && kill -0 $(cat "$pid") 2>/dev/null && {{
                 vm=$(basename "$pid" .pid)
-                ip=$(grep 'ci-info:.*ens.*True' "{}/$vm.log" 2>/dev/null | sed 's/.*True[^0-9]*\([0-9.]\+\).*/\1/' | head -1)
                 qemu_args=$(cat /proc/$(cat "$pid")/cmdline 2>/dev/null | tr '\0' ' ')
+                # Extract MAC from QEMU args and find IP in ARP table
+                mac=$(echo "$qemu_args" | grep -o 'mac=[^, ]*' | cut -d= -f2)
+                ip=$(arp -a 2>/dev/null | grep -i "$mac" | grep -oE '([0-9]{{1,3}}\.){{3}}[0-9]{{1,3}}' | head -1)
                 mem=$(echo "$qemu_args" | sed -n 's/.*-m \([0-9]*\).*/\1/p')
                 cpus=$(echo "$qemu_args" | sed -n 's/.*-smp \([0-9]*\).*/\1/p')
                 echo "$vm|$ip|$mem|$cpus"
                 exit 0
             }}
         done"#,
-            vm::VM_RUN_PATH, vm::VM_RUN_PATH
+            vm::VM_RUN_PATH
         ))
         .ok()?;
 

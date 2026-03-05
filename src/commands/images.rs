@@ -152,6 +152,21 @@ struct CloudImage {
     url: &'static str,
 }
 
+/// Get a friendly display name for an image file
+/// Returns the friendly name if it matches a known cloud image, otherwise returns the filename
+pub fn get_image_display_name(filename: &str) -> String {
+    for img in CLOUD_IMAGES {
+        // Extract filename from URL
+        if let Some(url_filename) = img.url.rsplit('/').next() {
+            if filename == url_filename {
+                return format!("{} {} ({}, {})", img.name, img.version, img.arch, img.size);
+            }
+        }
+    }
+    // Not a known cloud image, return filename as-is
+    filename.to_string()
+}
+
 const CLOUD_IMAGES: &[CloudImage] = &[
     // Ubuntu
     CloudImage {

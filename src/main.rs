@@ -7,7 +7,7 @@ mod ui;
 mod vm;
 
 use clap::{Parser, Subcommand};
-use commands::{deploy, destroy, images, init, list, remove, server};
+use commands::{deploy, destroy, images, init, list, remove, server, watcher_start};
 
 #[derive(Parser)]
 #[command(name = "cave")]
@@ -66,6 +66,12 @@ enum Commands {
     /// Launch interactive TUI dashboard
     #[command(alias = "ui")]
     Tui,
+    /// Internal: Start VM on a node (used by watcher)
+    #[command(hide = true)]
+    WatcherStart {
+        /// Hostname of the node
+        hostname: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -128,6 +134,7 @@ async fn main() -> anyhow::Result<()> {
             ImageAction::Search { query } => images::search(&query).await?,
         },
         Commands::Tui => tui::run()?,
+        Commands::WatcherStart { hostname } => watcher_start::run(&hostname).await?,
     }
 
     Ok(())

@@ -5,3 +5,4 @@ pub mod init;
 pub mod list;
 pub mod remove;
 pub mod server;
+pub mod watcher_start;

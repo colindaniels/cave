@@ -11,7 +11,9 @@
       "WebFetch(domain:documentation.ubuntu.com)",
       "WebFetch(domain:docs.cloud-init.io)",
       "WebFetch(domain:cloudinit.readthedocs.io)",
-      "Bash(./target/release/cave list:*)"
+      "Bash(./target/release/cave list:*)",
+      "Bash(scp:*)",
+      "Bash(cave list:*)"
     ]
   }
 }

@@ -300,12 +300,23 @@ pub async fn start() -> Result<()> {
     spinner.finish_and_clear();
     ui::print_success("pixiecore started");
 
+    // Start VM watcher in background
+    let spinner = create_spinner("Starting VM watcher...");
+    let watcher_pid = start_vm_watcher()?;
+    spinner.finish_and_clear();
+    ui::print_success("VM watcher started");
+
+    // Save all PIDs
+    fs::write(&pid_file, format!("{}\n{}\n{}", pid, http_handle, watcher_pid))
+        .context("Failed to write PID file")?;
+
     ui::print_completion("PXE Server Running");
     println!();
     ui::print_box("Server Info", &[
         ("Local IP", &local_ip),
         ("HTTP port", &port.to_string()),
         ("pixiecore PID", &pid.to_string()),
+        ("VM watcher PID", &watcher_pid.to_string()),
     ]);
     println!();
     println!(
@@ -332,6 +343,63 @@ fn start_http_server(port: u16) -> Result<u32> {
         .stderr(Stdio::null())
         .spawn()
         .context("Failed to start HTTP server. Is python3 installed?")?;
+
+    Ok(child.id())
+}
+
+/// Start background VM watcher that auto-starts VMs on standby nodes
+fn start_vm_watcher() -> Result<u32> {
+    let cave_dir = Config::cave_dir();
+    let vms_dir = Config::vms_dir();
+    let watcher_log = cave_dir.join("watcher.log");
+
+    // Get path to cave binary
+    let cave_bin = std::env::current_exe()
+        .unwrap_or_else(|_| std::path::PathBuf::from("cave"));
+
+    // Simple watcher that calls `cave watcher-start <hostname>` for each config
+    // This uses the exact same code path as deploy
+    let watcher_script = format!(
+        r#"#!/bin/sh
+# Cave VM Watcher - auto-starts VMs on standby nodes
+CAVE="{cave_bin}"
+VMS_DIR="{vms_dir}"
+LOG="{log}"
+
+log() {{
+    echo "$(date '+%Y-%m-%d %H:%M:%S') [watcher] $1" >> "$LOG"
+}}
+
+log "Watcher started, configs in $VMS_DIR"
+
+while true; do
+    for conf in "$VMS_DIR"/*.conf; do
+        [ -f "$conf" ] || continue
+        hostname=$(basename "$conf" .conf)
+        # Call cave watcher-start which uses the same code as deploy
+        if "$CAVE" watcher-start "$hostname" 2>/dev/null; then
+            log "Started VM on $hostname"
+        fi
+    done
+    sleep 10
+done
+"#,
+        cave_bin = cave_bin.display(),
+        vms_dir = vms_dir.display(),
+        log = watcher_log.display()
+    );
+
+    // Write watcher script
+    let script_path = cave_dir.join("watcher.sh");
+    fs::write(&script_path, &watcher_script)?;
+
+    // Make executable and run
+    let child = Command::new("sh")
+        .arg(&script_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("Failed to start VM watcher")?;
 
     Ok(child.id())
 }
