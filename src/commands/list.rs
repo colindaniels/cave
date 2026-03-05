@@ -1,5 +1,8 @@
 use anyhow::Result;
 use console::style;
+use indicatif::{ProgressBar, ProgressStyle};
+use std::thread;
+use std::time::Duration;
 
 use crate::config::{scan_network, Config};
 use crate::ssh::SshConnection;
@@ -19,24 +22,43 @@ pub async fn run() -> Result<()> {
         return Ok(());
     }
 
-    // Scan network once for all MACs
-    print!("  Scanning network... ");
-    std::io::Write::flush(&mut std::io::stdout())?;
-    let mac_to_ip = scan_network();
-    println!("{}", style("done").green());
+    // Scan network and fetch node info in parallel
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("  {spinner} {msg}")
+            .unwrap()
+            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
+    );
+    spinner.set_message("Scanning...");
+    spinner.enable_steady_tick(Duration::from_millis(80));
 
-    let mut results = Vec::new();
-    for node in &config.nodes {
-        // Look up IP from the scan results
-        let ip = mac_to_ip.get(&node.mac.to_lowercase()).cloned();
-        let info = get_node_info(node, ip.as_deref());
-        let vm_info = if info.status == NodeStatus::Active {
-            get_vm_info(ip.as_ref().unwrap())
-        } else {
-            None
-        };
-        results.push((node.clone(), ip, info, vm_info));
-    }
+    let mac_to_ip = scan_network();
+
+    let handles: Vec<_> = config
+        .nodes
+        .iter()
+        .map(|node| {
+            let node = node.clone();
+            let ip = mac_to_ip.get(&node.mac.to_lowercase()).cloned();
+            thread::spawn(move || {
+                let info = get_node_info(&node, ip.as_deref());
+                let vm_info = if info.status == NodeStatus::Active {
+                    get_vm_info(ip.as_ref().unwrap())
+                } else {
+                    None
+                };
+                (node, ip, info, vm_info)
+            })
+        })
+        .collect();
+
+    let results: Vec<_> = handles
+        .into_iter()
+        .filter_map(|h| h.join().ok())
+        .collect();
+
+    spinner.finish_and_clear();
 
     // Print header
     println!();

@@ -30,15 +30,32 @@ fn read_arp_cache() -> HashMap<String, String> {
     results
 }
 
+/// Quick ping check - returns true if host responds
+fn ping_check(ip: &str) -> bool {
+    Command::new("ping")
+        .args(["-c", "1", "-W", "1", ip])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 /// Scan network once and return map of MAC -> IP
+/// Verifies cached IPs with ping, rescans if they don't respond
 pub fn scan_network() -> HashMap<String, String> {
-    // First, just check existing ARP cache (instant)
-    let results = read_arp_cache();
-    if !results.is_empty() {
-        return results;
+    // First, check existing ARP cache (instant)
+    let cached = read_arp_cache();
+    if !cached.is_empty() {
+        // Verify at least one cached IP responds
+        let any_alive = cached.values().take(3).any(|ip| ping_check(ip));
+        if any_alive {
+            return cached;
+        }
+        // Cache is stale, need fresh scan
     }
 
-    // Cache empty - try arp-scan if available
+    // Try arp-scan if available
     if let Ok(output) = Command::new("arp-scan")
         .args(["-l", "-q"])
         .output()
@@ -62,7 +79,7 @@ pub fn scan_network() -> HashMap<String, String> {
         }
     }
 
-    // Last resort: ping broadcast to populate cache
+    // Ping broadcast to populate cache
     let _ = Command::new("ping")
         .args(["-c", "1", "-W", "1", "-b", "192.168.1.255"])
         .stdout(std::process::Stdio::null())
