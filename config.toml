@@ -6,3 +6,7 @@ initialized = true
 [[nodes]]
 hostname = "mercury1"
 mac = "7c:83:34:bb:91:e2"
+
+[[nodes]]
+hostname = "mercury2"
+mac = "7c:83:34:bb:93:a9"

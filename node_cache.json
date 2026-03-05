@@ -23,5 +23,21 @@
       "memory": "2048M",
       "cpus": "2"
     }
+  },
+  {
+    "hostname": "mercury2",
+    "mac": "7c:83:34:bb:93:a9",
+    "ip": "192.168.1.12",
+    "status": "standby",
+    "cpu": "Intel(R) N95",
+    "cores": "4 cores",
+    "ram": "7.5G",
+    "disks": [
+      {
+        "size_bytes": 256060514304,
+        "disk_type": "SSD"
+      }
+    ],
+    "vm": null
   }
 ]

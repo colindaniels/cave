@@ -143,13 +143,13 @@ pub async fn pull(url: &str) -> Result<()> {
     Ok(())
 }
 
-struct CloudImage {
-    name: &'static str,
-    version: &'static str,
-    arch: &'static str,
-    format: &'static str,
-    size: &'static str,
-    url: &'static str,
+pub struct CloudImage {
+    pub name: &'static str,
+    pub version: &'static str,
+    pub arch: &'static str,
+    pub format: &'static str,
+    pub size: &'static str,
+    pub url: &'static str,
 }
 
 /// Get a friendly display name for an image file
@@ -167,7 +167,7 @@ pub fn get_image_display_name(filename: &str) -> String {
     filename.to_string()
 }
 
-const CLOUD_IMAGES: &[CloudImage] = &[
+pub const CLOUD_IMAGES: &[CloudImage] = &[
     // Ubuntu
     CloudImage {
         name: "Ubuntu",
