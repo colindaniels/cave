@@ -20,49 +20,21 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Initialize and manage the PXE server
+    /// Initialize the PXE server (download Alpine, generate SSH keys)
+    Init {
+        /// Port for the HTTP server
+        #[arg(long, default_value = "8080")]
+        port: u16,
+    },
+    /// Manage the PXE server
     Server {
         #[command(subcommand)]
         action: ServerAction,
     },
-    /// Register a new node
-    Init {
-        /// Hostname for the node
-        hostname: String,
-        /// MAC address of the node
-        mac: String,
-    },
-    /// List all registered nodes with status and specs
-    List,
-    /// Deploy an image as a VM on a node
-    Deploy {
-        /// Hostname of the node (interactive if not provided)
-        hostname: Option<String>,
-        /// Image name to deploy (interactive if not provided)
-        image: Option<String>,
-    },
-    /// Stop and remove the VM on a node
-    Destroy {
-        /// Hostname of the node
-        hostname: String,
-        /// VM name (defaults to node hostname if not specified)
-        #[arg(long)]
-        name: Option<String>,
-    },
-    /// Remove a node from the registry
-    Remove {
-        /// Hostname of the node
-        hostname: String,
-    },
-    /// Send Wake-on-LAN packet to a node
-    Wake {
-        /// Hostname of the node to wake
-        hostname: String,
-    },
-    /// Gracefully shut down a node (opposite of wake)
-    Shutdown {
-        /// Hostname of the node to shut down
-        hostname: String,
+    /// Manage nodes
+    Node {
+        #[command(subcommand)]
+        action: NodeAction,
     },
     /// List local images
     Images,
@@ -95,20 +67,64 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum ServerAction {
-    /// Initialize the PXE server (download Alpine, generate SSH keys)
-    Init {
-        /// Port for the HTTP server
-        #[arg(long, default_value = "8080")]
-        port: u16,
-    },
     /// Start the PXE server
     Start,
     /// Stop the PXE server
     Stop,
+    /// Restart the PXE server
+    Restart,
     /// Show server status
     Status,
     /// Tail server logs (Ctrl+C to exit)
     Logs,
+}
+
+#[derive(Subcommand)]
+enum NodeAction {
+    /// Register a new node
+    Init {
+        /// Hostname for the node
+        hostname: String,
+        /// MAC address of the node
+        mac: String,
+    },
+    /// List all registered nodes with status and specs
+    List,
+    /// Deploy an image as a VM on a node
+    Deploy {
+        /// Hostname of the node (interactive if not provided)
+        hostname: Option<String>,
+        /// Image name to deploy (interactive if not provided)
+        image: Option<String>,
+    },
+    /// Stop and remove the VM on a node
+    Destroy {
+        /// Hostname of the node
+        hostname: String,
+        /// VM name (defaults to node hostname if not specified)
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Remove a node from the registry
+    Remove {
+        /// Hostname of the node
+        hostname: String,
+    },
+    /// Send Wake-on-LAN packet to power on a node
+    Wake {
+        /// Hostname of the node to wake
+        hostname: String,
+    },
+    /// Gracefully shut down a node
+    Shutdown {
+        /// Hostname of the node to shut down
+        hostname: String,
+    },
+    /// Restart a node (shutdown + wake)
+    Restart {
+        /// Hostname of the node to restart
+        hostname: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -130,25 +146,37 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Init { port } => server::init(port).await?,
         Commands::Server { action } => match action {
-            ServerAction::Init { port } => server::init(port).await?,
             ServerAction::Start => server::start().await?,
             ServerAction::Stop => server::stop().await?,
+            ServerAction::Restart => {
+                server::stop().await?;
+                server::start().await?;
+            }
             ServerAction::Status => server::status().await?,
             ServerAction::Logs => server::logs().await?,
         },
-        Commands::Init { hostname, mac } => init::run(&hostname, &mac).await?,
-        Commands::List => list::run().await?,
-        Commands::Deploy { hostname, image } => {
-            deploy::run(hostname.as_deref(), image.as_deref()).await?
+        Commands::Node { action } => match action {
+            NodeAction::Init { hostname, mac } => init::run(&hostname, &mac).await?,
+            NodeAction::List => list::run().await?,
+            NodeAction::Deploy { hostname, image } => {
+                deploy::run(hostname.as_deref(), image.as_deref()).await?
+            }
+            NodeAction::Destroy { hostname, name } => {
+                let vm_name = name.as_deref().unwrap_or(&hostname);
+                destroy::run(&hostname, vm_name).await?
+            }
+            NodeAction::Remove { hostname } => remove::run(&hostname).await?,
+            NodeAction::Wake { hostname } => wake::run(&hostname).await?,
+            NodeAction::Shutdown { hostname } => shutdown::run(&hostname).await?,
+            NodeAction::Restart { hostname } => {
+                shutdown::run(&hostname).await?;
+                // Wait a moment for clean shutdown
+                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                wake::run(&hostname).await?;
+            }
         },
-        Commands::Destroy { hostname, name } => {
-            let vm_name = name.as_deref().unwrap_or(&hostname);
-            destroy::run(&hostname, vm_name).await?
-        },
-        Commands::Remove { hostname } => remove::run(&hostname).await?,
-        Commands::Wake { hostname } => wake::run(&hostname).await?,
-        Commands::Shutdown { hostname } => shutdown::run(&hostname).await?,
         Commands::Images => images::list().await?,
         Commands::Image { action } => match action {
             ImageAction::Pull { url } => images::pull(&url).await?,
