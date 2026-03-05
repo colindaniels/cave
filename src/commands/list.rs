@@ -144,9 +144,11 @@ fn get_vm_info(host_ip: &str) -> Option<VmInfo> {
             [ -f "$pid" ] && kill -0 $(cat "$pid") 2>/dev/null && {{
                 vm=$(basename "$pid" .pid)
                 qemu_args=$(cat /proc/$(cat "$pid")/cmdline 2>/dev/null | tr '\0' ' ')
-                # Extract MAC from QEMU args and find IP in ARP table
+                # Extract MAC from QEMU args and scan network to find its IP
                 mac=$(echo "$qemu_args" | grep -o 'mac=[^, ]*' | cut -d= -f2)
-                ip=$(arp -a 2>/dev/null | grep -i "$mac" | grep -oE '([0-9]{{1,3}}\.){{3}}[0-9]{{1,3}}' | head -1)
+                # Install arp-scan if needed, then scan for the MAC
+                which arp-scan >/dev/null 2>&1 || apk add --no-cache arp-scan >/dev/null 2>&1
+                ip=$(arp-scan -I br0 -l 2>/dev/null | grep -i "$mac" | awk '{{print $1}}')
                 mem=$(echo "$qemu_args" | sed -n 's/.*-m \([0-9]*\).*/\1/p')
                 cpus=$(echo "$qemu_args" | sed -n 's/.*-smp \([0-9]*\).*/\1/p')
                 echo "$vm|$ip|$mem|$cpus"
