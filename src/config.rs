@@ -5,16 +5,46 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+/// Read current ARP cache without network scan
+fn read_arp_cache() -> HashMap<String, String> {
+    let mut results = HashMap::new();
+    if let Ok(output) = Command::new("ip").args(["neigh"]).output() {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 5 {
+                    let ip = parts[0];
+                    if let Some(pos) = parts.iter().position(|&x| x == "lladdr") {
+                        if pos + 1 < parts.len() {
+                            let mac = parts[pos + 1].to_lowercase();
+                            if mac.contains(':') {
+                                results.insert(mac, ip.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    results
+}
+
 /// Scan network once and return map of MAC -> IP
 pub fn scan_network() -> HashMap<String, String> {
-    let mut results = HashMap::new();
+    // First, just check existing ARP cache (instant)
+    let results = read_arp_cache();
+    if !results.is_empty() {
+        return results;
+    }
 
-    // Try arp-scan if available (most reliable)
+    // Cache empty - try arp-scan if available
     if let Ok(output) = Command::new("arp-scan")
         .args(["-l", "-q"])
         .output()
     {
         if output.status.success() {
+            let mut results = HashMap::new();
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines() {
                 let parts: Vec<&str> = line.split_whitespace().collect();
@@ -32,38 +62,14 @@ pub fn scan_network() -> HashMap<String, String> {
         }
     }
 
-    // Fallback: ping broadcast to refresh ARP cache, then read it
-    for subnet in ["192.168.1.255", "192.168.0.255", "10.0.0.255"] {
-        let _ = Command::new("ping")
-            .args(["-c", "2", "-W", "1", "-b", subnet])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-    }
+    // Last resort: ping broadcast to populate cache
+    let _ = Command::new("ping")
+        .args(["-c", "1", "-W", "1", "-b", "192.168.1.255"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
 
-    // Read the ARP cache
-    if let Ok(output) = Command::new("ip").args(["neigh"]).output() {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines() {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                // Format: "192.168.1.12 dev eth0 lladdr aa:bb:cc:dd:ee:ff REACHABLE"
-                if parts.len() >= 5 {
-                    let ip = parts[0];
-                    if let Some(pos) = parts.iter().position(|&x| x == "lladdr") {
-                        if pos + 1 < parts.len() {
-                            let mac = parts[pos + 1].to_lowercase();
-                            if mac.contains(':') {
-                                results.insert(mac, ip.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    results
+    read_arp_cache()
 }
 
 /// Scan network to find IP for a given MAC address
