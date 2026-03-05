@@ -7,7 +7,7 @@ mod ui;
 mod vm;
 
 use clap::{Parser, Subcommand};
-use commands::{deploy, destroy, images, init, list, remove, server, watcher_start};
+use commands::{deploy, destroy, http_serve, images, init, list, remove, server, watcher_start};
 
 #[derive(Parser)]
 #[command(name = "cave")]
@@ -29,8 +29,6 @@ enum Commands {
     Init {
         /// Hostname for the node
         hostname: String,
-        /// IP address of the node
-        ip: String,
         /// MAC address of the node
         mac: String,
     },
@@ -71,6 +69,14 @@ enum Commands {
     WatcherStart {
         /// Hostname of the node
         hostname: String,
+    },
+    /// Internal: HTTP file server (used by server start)
+    #[command(hide = true)]
+    HttpServe {
+        /// Port to serve on
+        port: u16,
+        /// Directory to serve
+        dir: String,
     },
 }
 
@@ -118,7 +124,7 @@ async fn main() -> anyhow::Result<()> {
             ServerAction::Status => server::status().await?,
             ServerAction::Logs => server::logs().await?,
         },
-        Commands::Init { hostname, ip, mac } => init::run(&hostname, &ip, &mac).await?,
+        Commands::Init { hostname, mac } => init::run(&hostname, &mac).await?,
         Commands::List => list::run().await?,
         Commands::Deploy { hostname, image } => {
             deploy::run(hostname.as_deref(), image.as_deref()).await?
@@ -135,6 +141,7 @@ async fn main() -> anyhow::Result<()> {
         },
         Commands::Tui => tui::run()?,
         Commands::WatcherStart { hostname } => watcher_start::run(&hostname).await?,
+        Commands::HttpServe { port, dir } => http_serve::run(port, &dir).await?,
     }
 
     Ok(())

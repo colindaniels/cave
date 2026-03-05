@@ -10,7 +10,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::config::{Config, Node};
+use crate::config::{scan_for_ip, Config, Node};
 use crate::ssh::SshConnection;
 use crate::status::NodeStatus;
 use crate::vm;
@@ -39,6 +39,7 @@ pub enum DeployStep {
 #[derive(Debug, Clone)]
 pub struct NodeInfo {
     pub node: Node,
+    pub ip: String,  // Current IP from network scan
     pub status: NodeStatus,
     pub cpu: String,
     pub cores: String,
@@ -479,19 +480,37 @@ fn refresh_worker(rx: Receiver<RefreshRequest>, tx: Sender<RefreshResult>, confi
 fn get_node_info_fast(node: &Node) -> NodeInfo {
     let timeout = Duration::from_secs(2);
 
+    // Scan for IP first
+    let ip = match scan_for_ip(&node.mac) {
+        Some(ip) => ip,
+        None => {
+            return NodeInfo {
+                node: node.clone(),
+                ip: String::new(),
+                status: NodeStatus::Offline,
+                cpu: String::new(),
+                cores: String::new(),
+                ram: String::new(),
+                vm_name: None,
+                vm_ip: None,
+            };
+        }
+    };
+
     // Try to connect with short timeout
-    let ssh = SshConnection::connect_timeout(&node.ip, timeout);
+    let ssh = SshConnection::connect_timeout(&ip, timeout);
 
     match ssh {
         Ok(ssh) => {
             // Check if VM is running
-            let (status, vm_name, vm_ip) = check_vm_status(&ssh, &node.ip);
+            let (status, vm_name, vm_ip) = check_vm_status(&ssh, &ip);
 
             // Get basic specs (quick command)
             let (cpu, cores, ram) = get_specs_fast(&ssh);
 
             NodeInfo {
                 node: node.clone(),
+                ip,
                 status,
                 cpu,
                 cores,
@@ -502,6 +521,7 @@ fn get_node_info_fast(node: &Node) -> NodeInfo {
         }
         Err(_) => NodeInfo {
             node: node.clone(),
+            ip,
             status: NodeStatus::Offline,
             cpu: String::new(),
             cores: String::new(),

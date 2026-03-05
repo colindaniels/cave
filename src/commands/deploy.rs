@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::commands::images::get_image_display_name;
-use crate::config::Config;
+use crate::config::{scan_for_ip, Config};
 use crate::ssh::{self, SshConnection};
 use crate::status::{get_disk_info, get_node_resources, get_node_status, DiskInfo, NodeStatus};
 use crate::ui;
@@ -22,7 +22,7 @@ pub async fn run(hostname: Option<&str>, image: Option<&str>) -> Result<()> {
         ui::print_error("No nodes registered");
         println!(
             "  Run {} to add a node first",
-            style("cave init <hostname> <ip> <mac>").cyan()
+            style("cave init <hostname> <mac>").cyan()
         );
         return Ok(());
     }
@@ -38,7 +38,7 @@ pub async fn run(hostname: Option<&str>, image: Option<&str>) -> Result<()> {
         let node_names: Vec<String> = config
             .nodes
             .iter()
-            .map(|n| format!("{} ({})", n.hostname, n.ip))
+            .map(|n| format!("{} ({})", n.hostname, n.mac))
             .collect();
 
         let selection = FuzzySelect::with_theme(&theme)
@@ -49,6 +49,14 @@ pub async fn run(hostname: Option<&str>, image: Option<&str>) -> Result<()> {
 
         config.nodes[selection].clone()
     };
+
+    // Scan network for node IP
+    let node_ip = scan_for_ip(&node.mac).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Could not find node '{}' on network. Is it powered on?",
+            node.hostname
+        )
+    })?;
 
     // Get available images
     let images = get_available_images()?;
@@ -97,7 +105,7 @@ pub async fn run(hostname: Option<&str>, image: Option<&str>) -> Result<()> {
 
     // Connect to node to get disk info and resources
     let spinner = create_spinner("Checking node resources...");
-    let ssh = SshConnection::connect(&node.ip).context("Failed to connect to node")?;
+    let ssh = SshConnection::connect(&node_ip).context("Failed to connect to node")?;
     let disks = get_disk_info(&ssh);
     let (node_ram_mb, node_cpu_cores) = get_node_resources(&ssh);
     drop(ssh); // Release connection for now
@@ -220,7 +228,7 @@ pub async fn run(hostname: Option<&str>, image: Option<&str>) -> Result<()> {
     println!();
     let disk_display = disk_size.map_or("Default".to_string(), |s| format!("{} GB", s));
     ui::print_box("Deployment Summary", &[
-        ("Node", &format!("{} ({})", node.hostname, node.ip)),
+        ("Node", &format!("{} ({})", node.hostname, node_ip)),
         ("Image", image_path.file_name().unwrap().to_str().unwrap()),
         ("VM Name", &vm_name),
         ("Memory", &ui::format_memory(memory)),
@@ -250,7 +258,7 @@ pub async fn run(hostname: Option<&str>, image: Option<&str>) -> Result<()> {
 
     // Check node status
     let spinner = create_spinner("Checking node status...");
-    let status = get_node_status(&node);
+    let status = get_node_status(&node_ip);
     spinner.finish_and_clear();
 
     match status {
@@ -271,8 +279,8 @@ pub async fn run(hostname: Option<&str>, image: Option<&str>) -> Result<()> {
     let _ = fs::remove_file(&vm_config_path);
 
     // Connect via SSH
-    let spinner = create_spinner(&format!("Connecting to {}...", node.ip));
-    let ssh = SshConnection::connect(&node.ip).context("Failed to connect via SSH")?;
+    let spinner = create_spinner(&format!("Connecting to {}...", node_ip));
+    let ssh = SshConnection::connect(&node_ip).context("Failed to connect via SSH")?;
     spinner.finish_and_clear();
     ui::print_success("Connected");
 
@@ -321,7 +329,7 @@ pub async fn run(hostname: Option<&str>, image: Option<&str>) -> Result<()> {
     );
     pb.enable_steady_tick(Duration::from_millis(100));
 
-    ssh::scp_file(&node.ip, &image_path, &remote_image_path)
+    ssh::scp_file(&node_ip, &image_path, &remote_image_path)
         .context("Failed to transfer image")?;
 
     pb.finish_and_clear();
@@ -346,7 +354,7 @@ pub async fn run(hostname: Option<&str>, image: Option<&str>) -> Result<()> {
     let remote_seed_path = if let Some(ref seed_path) = seed_iso_path {
         let spinner = create_spinner("Transferring cloud-init seed...");
         let remote_seed = format!("{}/{}-seed.iso", vm::VM_IMAGES_PATH, vm_name);
-        ssh::scp_file(&node.ip, seed_path, &remote_seed)
+        ssh::scp_file(&node_ip, seed_path, &remote_seed)
             .context("Failed to transfer seed ISO")?;
         spinner.finish_and_clear();
         ui::print_success("Cloud-init seed ready");
@@ -370,7 +378,7 @@ pub async fn run(hostname: Option<&str>, image: Option<&str>) -> Result<()> {
     let mac_addr = vm::generate_mac_for_lookup(&vm_name);
     let vm_config = format!(
         "NODE_IP={}\nVM_NAME={}\nMEMORY_MB={}\nCPUS={}\nDISK_PATH={}\nSEED_ISO={}\nDISK_NAME={}\nMAC={}\n",
-        node.ip, vm_name, memory, cpus, remote_image_path, remote_seed_str, disk_name_str, mac_addr
+        node_ip, vm_name, memory, cpus, remote_image_path, remote_seed_str, disk_name_str, mac_addr
     );
     fs::write(&vm_config_path, &vm_config)?;
     ui::print_success("VM config saved");
@@ -386,7 +394,7 @@ pub async fn run(hostname: Option<&str>, image: Option<&str>) -> Result<()> {
         style(&node.hostname).cyan()
     );
     println!();
-    println!("  {} {}", style("Alpine host:").dim(), format!("ssh root@{}", node.ip));
+    println!("  {} {}", style("Alpine host:").dim(), format!("ssh root@{}", node_ip));
     let disk_info = disk_size.map_or("default".to_string(), |s| format!("{}GB", s));
     println!("  {} {}", style("Config:").dim(), format!("{}, {} CPUs, {} disk", ui::format_memory(memory), cpus, disk_info));
     println!();

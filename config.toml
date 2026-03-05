@@ -5,10 +5,4 @@ initialized = true
 
 [[nodes]]
 hostname = "mercury1"
-ip = "192.168.1.11"
 mac = "7c:83:34:bb:91:e2"
-
-[[nodes]]
-hostname = "mercury2"
-ip = "192.168.1.12"
-mac = "7c:83:34:bb:93:a9"

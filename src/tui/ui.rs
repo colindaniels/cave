@@ -139,7 +139,7 @@ fn draw_nodes_panel(f: &mut Frame, app: &App, area: Rect) {
 
             let mut rows = vec![Row::new(vec![
                 format!(" {} {}", status_icon, node.node.hostname),
-                node.node.ip.clone(),
+                node.ip.clone(),
                 format!("{}", match node.status {
                     NodeStatus::Active => "active",
                     NodeStatus::Standby => "standby",
@@ -438,7 +438,7 @@ fn draw_deploy_node_select(f: &mut Frame, app: &App, area: Rect) {
             ListItem::new(Line::from(vec![
                 Span::styled(if is_selected { " ▸ " } else { "   " }, style),
                 Span::styled(&node.node.hostname, style.bold()),
-                Span::styled(format!("  {}", node.node.ip), style),
+                Span::styled(format!("  {}", node.ip), style),
                 Span::styled("  ●", Style::default().fg(status_color)),
             ]))
         })
@@ -586,7 +586,7 @@ fn draw_deploy_confirm(f: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled("  Node:   ", Style::default().fg(SUBTEXT)),
             Span::styled(&node.node.hostname, Style::default().fg(SAPPHIRE)),
-            Span::styled(format!(" ({})", node.node.ip), Style::default().fg(SUBTEXT)),
+            Span::styled(format!(" ({})", node.ip), Style::default().fg(SUBTEXT)),
         ]),
         Line::from(vec![
             Span::styled("  Image:  ", Style::default().fg(SUBTEXT)),
@@ -671,7 +671,7 @@ fn draw_deploy_complete(f: &mut Frame, app: &App, area: Rect) {
         Line::from(""),
         Line::from(vec![
             Span::styled("  Alpine host: ", Style::default().fg(SUBTEXT)),
-            Span::styled(format!("ssh root@{}", node.node.ip), Style::default().fg(SAPPHIRE)),
+            Span::styled(format!("ssh root@{}", node.ip), Style::default().fg(SAPPHIRE)),
         ]),
         Line::from(""),
         Line::from(""),

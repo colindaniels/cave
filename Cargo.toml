@@ -20,6 +20,9 @@ anyhow = "1"
 dialoguer = { version = "0.11", features = ["fuzzy-select"] }
 console = "0.15"
 libc = "0.2"
+# HTTP server
+axum = "0.7"
+tower-http = { version = "0.5", features = ["fs"] }
 # TUI
 ratatui = "0.29"
 crossterm = "0.28"

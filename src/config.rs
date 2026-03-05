@@ -1,7 +1,76 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
+
+/// Scan network once and return map of MAC -> IP
+pub fn scan_network() -> HashMap<String, String> {
+    let mut results = HashMap::new();
+
+    // Try arp-scan if available (most reliable)
+    if let Ok(output) = Command::new("arp-scan")
+        .args(["-l", "-q"])
+        .output()
+    {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    let ip = parts[0];
+                    let mac = parts[1].to_lowercase();
+                    if ip.contains('.') && mac.contains(':') {
+                        results.insert(mac, ip.to_string());
+                    }
+                }
+            }
+            if !results.is_empty() {
+                return results;
+            }
+        }
+    }
+
+    // Fallback: ping broadcast to refresh ARP cache, then read it
+    for subnet in ["192.168.1.255", "192.168.0.255", "10.0.0.255"] {
+        let _ = Command::new("ping")
+            .args(["-c", "2", "-W", "1", "-b", subnet])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+
+    // Read the ARP cache
+    if let Ok(output) = Command::new("ip").args(["neigh"]).output() {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                // Format: "192.168.1.12 dev eth0 lladdr aa:bb:cc:dd:ee:ff REACHABLE"
+                if parts.len() >= 5 {
+                    let ip = parts[0];
+                    if let Some(pos) = parts.iter().position(|&x| x == "lladdr") {
+                        if pos + 1 < parts.len() {
+                            let mac = parts[pos + 1].to_lowercase();
+                            if mac.contains(':') {
+                                results.insert(mac, ip.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    results
+}
+
+/// Scan network to find IP for a given MAC address
+pub fn scan_for_ip(mac: &str) -> Option<String> {
+    let results = scan_network();
+    results.get(&mac.to_lowercase()).cloned()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -21,7 +90,6 @@ pub struct ServerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
     pub hostname: String,
-    pub ip: String,
     pub mac: String,
 }
 
@@ -130,14 +198,13 @@ impl Config {
         Ok(())
     }
 
-    pub fn add_node(&mut self, hostname: &str, ip: &str, mac: &str) -> Result<()> {
+    pub fn add_node(&mut self, hostname: &str, mac: &str) -> Result<()> {
         if self.nodes.iter().any(|n| n.hostname == hostname) {
             anyhow::bail!("Node '{}' already exists", hostname);
         }
 
         self.nodes.push(Node {
             hostname: hostname.to_string(),
-            ip: ip.to_string(),
             mac: mac.to_string(),
         });
         Ok(())

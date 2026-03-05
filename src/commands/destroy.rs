@@ -4,7 +4,7 @@ use dialoguer::{theme::ColorfulTheme, Confirm};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Duration;
 
-use crate::config::Config;
+use crate::config::{scan_for_ip, Config};
 use crate::ssh::SshConnection;
 use crate::ui;
 use crate::vm;
@@ -18,9 +18,17 @@ pub async fn run(hostname: &str, vm_name: &str) -> Result<()> {
         .get_node(hostname)
         .ok_or_else(|| anyhow::anyhow!("Node '{}' not found", hostname))?;
 
+    // Scan network for node IP
+    let node_ip = scan_for_ip(&node.mac).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Could not find node '{}' on network. Is it powered on?",
+            node.hostname
+        )
+    })?;
+
     // Connect via SSH
-    let spinner = create_spinner(&format!("Connecting to {}...", node.ip));
-    let ssh = SshConnection::connect(&node.ip).context("Failed to connect via SSH")?;
+    let spinner = create_spinner(&format!("Connecting to {}...", node_ip));
+    let ssh = SshConnection::connect(&node_ip).context("Failed to connect via SSH")?;
     spinner.finish_and_clear();
 
     // Check if VM is running

@@ -1,9 +1,7 @@
 use anyhow::Result;
 use console::style;
-use indicatif::{ProgressBar, ProgressStyle};
-use std::time::Duration;
 
-use crate::config::Config;
+use crate::config::{scan_network, Config};
 use crate::ssh::SshConnection;
 use crate::status::{get_node_info, DiskInfo, NodeStatus};
 use crate::ui;
@@ -16,33 +14,29 @@ pub async fn run() -> Result<()> {
         ui::print_warning("No nodes registered");
         println!(
             "  Run {} to add a node",
-            style("cave init <hostname> <ip> <mac>").cyan()
+            style("cave init <hostname> <mac>").cyan()
         );
         return Ok(());
     }
 
-    let spinner = ProgressBar::new_spinner();
-    spinner.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.cyan} {msg}")
-            .unwrap()
-            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
-    );
-    spinner.set_message("Checking nodes...");
-    spinner.enable_steady_tick(Duration::from_millis(80));
+    // Scan network once for all MACs
+    print!("  Scanning network... ");
+    std::io::Write::flush(&mut std::io::stdout())?;
+    let mac_to_ip = scan_network();
+    println!("{}", style("done").green());
 
     let mut results = Vec::new();
     for node in &config.nodes {
-        let info = get_node_info(node);
+        // Look up IP from the scan results
+        let ip = mac_to_ip.get(&node.mac.to_lowercase()).cloned();
+        let info = get_node_info(node, ip.as_deref());
         let vm_info = if info.status == NodeStatus::Active {
-            get_vm_info(&node.ip)
+            get_vm_info(ip.as_ref().unwrap())
         } else {
             None
         };
-        results.push((node.clone(), info, vm_info));
+        results.push((node.clone(), ip, info, vm_info));
     }
-
-    spinner.finish_and_clear();
 
     // Print header
     println!();
@@ -56,7 +50,7 @@ pub async fn run() -> Result<()> {
     );
     println!("  {}", style("─".repeat(70)).dim());
 
-    for (node, info, vm_info) in &results {
+    for (node, ip, info, vm_info) in &results {
         // Status with color
         let status_display = match info.status {
             NodeStatus::Active => style("active").green().bold().to_string(),
@@ -79,10 +73,13 @@ pub async fn run() -> Result<()> {
             style("─").dim().to_string()
         };
 
+        // Display IP or "scanning..." if not found
+        let ip_display = ip.as_ref().map(|s| s.as_str()).unwrap_or("─");
+
         println!(
             "  {:<16} {:<16} {:<18} {}",
             style(&node.hostname).bold(),
-            &node.ip,
+            ip_display,
             status_display,
             specs
         );
@@ -109,9 +106,9 @@ pub async fn run() -> Result<()> {
     println!();
 
     // Summary
-    let active = results.iter().filter(|(_, i, _)| i.status == NodeStatus::Active).count();
-    let standby = results.iter().filter(|(_, i, _)| i.status == NodeStatus::Standby).count();
-    let offline = results.iter().filter(|(_, i, _)| i.status == NodeStatus::Offline).count();
+    let active = results.iter().filter(|(_, _, i, _)| i.status == NodeStatus::Active).count();
+    let standby = results.iter().filter(|(_, _, i, _)| i.status == NodeStatus::Standby).count();
+    let offline = results.iter().filter(|(_, _, i, _)| i.status == NodeStatus::Offline).count();
 
     print!("  ");
     if active > 0 {

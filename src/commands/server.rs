@@ -336,13 +336,20 @@ pub async fn start() -> Result<()> {
 fn start_http_server(port: u16) -> Result<u32> {
     let alpine_dir = Config::alpine_dir();
 
-    let child = Command::new("python3")
-        .args(["-m", "http.server", &port.to_string()])
-        .current_dir(&alpine_dir)
+    // Get path to cave binary
+    let cave_bin = std::env::current_exe()
+        .unwrap_or_else(|_| std::path::PathBuf::from("cave"));
+
+    let child = Command::new(&cave_bin)
+        .args([
+            "http-serve",
+            &port.to_string(),
+            alpine_dir.to_str().unwrap(),
+        ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .context("Failed to start HTTP server. Is python3 installed?")?;
+        .context("Failed to start HTTP server")?;
 
     Ok(child.id())
 }

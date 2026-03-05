@@ -171,8 +171,8 @@ pub struct VmStatus {
     pub pid: Option<String>,
 }
 
-pub fn get_node_status(node: &Node) -> NodeStatus {
-    match SshConnection::connect(&node.ip) {
+pub fn get_node_status(ip: &str) -> NodeStatus {
+    match SshConnection::connect(ip) {
         Ok(ssh) => {
             // Check if any VM is running on this node
             match is_any_vm_running(&ssh) {
@@ -194,8 +194,8 @@ fn is_any_vm_running(ssh: &SshConnection) -> anyhow::Result<bool> {
     Ok(output.trim() == "running")
 }
 
-pub fn get_node_specs(node: &Node) -> NodeSpecs {
-    match SshConnection::connect(&node.ip) {
+pub fn get_node_specs(ip: &str) -> NodeSpecs {
+    match SshConnection::connect(ip) {
         Ok(ssh) => {
             let mut specs = NodeSpecs::default();
 
@@ -242,10 +242,10 @@ pub fn get_node_specs(node: &Node) -> NodeSpecs {
     }
 }
 
-pub fn get_vm_status(node: &Node) -> Option<VmStatus> {
-    match SshConnection::connect(&node.ip) {
+pub fn get_vm_status(ip: &str, hostname: &str) -> Option<VmStatus> {
+    match SshConnection::connect(ip) {
         Ok(ssh) => {
-            match vm::get_vm_info(&ssh, &node.hostname) {
+            match vm::get_vm_info(&ssh, hostname) {
                 Ok(Some(info)) => Some(VmStatus {
                     running: true,
                     pid: Some(info.pid),
@@ -261,22 +261,27 @@ pub fn get_vm_status(node: &Node) -> Option<VmStatus> {
     }
 }
 
-pub fn get_node_info(node: &Node) -> NodeInfo {
-    let status = get_node_status(node);
+pub fn get_node_info(node: &Node, ip: Option<&str>) -> NodeInfo {
+    let ip_str = ip.unwrap_or("");
+    let status = if ip.is_some() {
+        get_node_status(ip_str)
+    } else {
+        NodeStatus::Offline
+    };
     let specs = if status != NodeStatus::Offline {
-        get_node_specs(node)
+        get_node_specs(ip_str)
     } else {
         NodeSpecs::default()
     };
     let vm_info = if status != NodeStatus::Offline {
-        get_vm_status(node)
+        get_vm_status(ip_str, &node.hostname)
     } else {
         None
     };
 
     NodeInfo {
         hostname: node.hostname.clone(),
-        ip: node.ip.clone(),
+        ip: ip_str.to_string(),
         mac: node.mac.clone(),
         status,
         specs,
