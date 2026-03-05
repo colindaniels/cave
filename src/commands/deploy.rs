@@ -13,7 +13,13 @@ use crate::status::{get_disk_info, get_node_resources, get_node_status, DiskInfo
 use crate::ui;
 use crate::vm;
 
-pub async fn run(hostname: Option<&str>, image: Option<&str>) -> Result<()> {
+pub async fn run(
+    hostname: Option<&str>,
+    image: Option<&str>,
+    memory_opt: Option<u32>,
+    cpus_opt: Option<u32>,
+    disk_opt: Option<u64>,
+) -> Result<()> {
     let config = Config::load()?;
     let theme = ColorfulTheme::default();
 
@@ -97,30 +103,38 @@ pub async fn run(hostname: Option<&str>, image: Option<&str>) -> Result<()> {
         Config::images_dir().join(&images[selection].0)
     };
 
+    // Non-interactive mode check
+    let non_interactive = memory_opt.is_some() && cpus_opt.is_some() && disk_opt.is_some();
+
     // VM name (default to hostname-vm to avoid SSH config conflicts)
     let default_vm_name = format!("{}-vm", node.hostname);
-    let vm_name: String = Input::with_theme(&theme)
-        .with_prompt("VM name")
-        .default(default_vm_name)
-        .validate_with(|input: &String| -> Result<(), &str> {
-            let name = input.trim();
-            if name.is_empty() {
-                return Err("VM name cannot be empty");
-            }
-            // Check against node hostnames
-            if let Ok(cfg) = Config::load() {
-                if cfg.nodes.iter().any(|n| n.hostname == name) {
-                    return Err("VM name conflicts with a node hostname");
+    let vm_name: String = if non_interactive {
+        // Use default name in non-interactive mode
+        default_vm_name
+    } else {
+        Input::with_theme(&theme)
+            .with_prompt("VM name")
+            .default(default_vm_name)
+            .validate_with(|input: &String| -> Result<(), &str> {
+                let name = input.trim();
+                if name.is_empty() {
+                    return Err("VM name cannot be empty");
                 }
-            }
-            // Check against existing VM names
-            let cache = load_node_cache();
-            if cache.iter().any(|n| n.vm.as_ref().map(|v| v.name.as_str()) == Some(name)) {
-                return Err("A VM with this name already exists");
-            }
-            Ok(())
-        })
-        .interact_text()?;
+                // Check against node hostnames
+                if let Ok(cfg) = Config::load() {
+                    if cfg.nodes.iter().any(|n| n.hostname == name) {
+                        return Err("VM name conflicts with a node hostname");
+                    }
+                }
+                // Check against existing VM names
+                let cache = load_node_cache();
+                if cache.iter().any(|n| n.vm.as_ref().map(|v| v.name.as_str()) == Some(name)) {
+                    return Err("A VM with this name already exists");
+                }
+                Ok(())
+            })
+            .interact_text()?
+    };
 
     // Connect to node to get disk info and resources
     let spinner = create_spinner("Checking node resources...");
@@ -130,24 +144,31 @@ pub async fn run(hostname: Option<&str>, image: Option<&str>) -> Result<()> {
     drop(ssh); // Release connection for now
     spinner.finish_and_clear();
 
-    // Show node resources
-    println!("  {} RAM: {} MB, CPUs: {}",
-        style("Node:").dim(),
-        node_ram_mb,
-        node_cpu_cores
-    );
+    // Show node resources (skip in non-interactive mode)
+    if !non_interactive {
+        println!("  {} RAM: {} MB, CPUs: {}",
+            style("Node:").dim(),
+            node_ram_mb,
+            node_cpu_cores
+        );
+    }
 
     // Select disk if multiple available
     let selected_disk: Option<&DiskInfo> = if disks.is_empty() {
-        ui::print_warning("No disks detected on node - using default storage");
+        if !non_interactive {
+            ui::print_warning("No disks detected on node - using default storage");
+        }
         None
-    } else if disks.len() == 1 {
-        println!("  {} {} {} ({})",
-            style("Disk:").dim(),
-            disks[0].name,
-            format_disk_size(disks[0].size_bytes),
-            disks[0].disk_type
-        );
+    } else if disks.len() == 1 || non_interactive {
+        // Use first disk in non-interactive mode or if only one disk
+        if !non_interactive {
+            println!("  {} {} {} ({})",
+                style("Disk:").dim(),
+                disks[0].name,
+                format_disk_size(disks[0].size_bytes),
+                disks[0].disk_type
+            );
+        }
         Some(&disks[0])
     } else {
         // Multiple disks - let user choose
@@ -190,15 +211,22 @@ pub async fn run(hostname: Option<&str>, image: Option<&str>) -> Result<()> {
     let memory_labels: Vec<&str> = filtered_memory.iter().map(|(_, label)| *label).collect();
     let memory_values: Vec<u32> = filtered_memory.iter().map(|(val, _)| *val).collect();
 
-    // Default to ~half of available options or 2GB
-    let default_mem_idx = memory_values.iter().position(|&v| v >= 2048).unwrap_or(0);
-
-    let memory_idx = FuzzySelect::with_theme(&theme)
-        .with_prompt("Memory")
-        .items(&memory_labels)
-        .default(default_mem_idx)
-        .interact()?;
-    let memory = memory_values[memory_idx];
+    let memory = if let Some(mem) = memory_opt {
+        // Non-interactive: use provided value (validate it's available)
+        if !memory_values.contains(&mem) {
+            anyhow::bail!("Memory {} MB not available (max: {} MB)", mem, memory_values.last().unwrap_or(&0));
+        }
+        mem
+    } else {
+        // Interactive: prompt user
+        let default_mem_idx = memory_values.iter().position(|&v| v >= 2048).unwrap_or(0);
+        let memory_idx = FuzzySelect::with_theme(&theme)
+            .with_prompt("Memory")
+            .items(&memory_labels)
+            .default(default_mem_idx)
+            .interact()?;
+        memory_values[memory_idx]
+    };
 
     // CPU selection - filter by available cores
     let all_cpu_options = [
@@ -223,54 +251,69 @@ pub async fn run(hostname: Option<&str>, image: Option<&str>) -> Result<()> {
     let cpu_labels: Vec<&str> = filtered_cpus.iter().map(|(_, label)| *label).collect();
     let cpu_values: Vec<u32> = filtered_cpus.iter().map(|(val, _)| *val).collect();
 
-    // Default to 2 CPUs or half of available
-    let default_cpu_idx = cpu_values.iter().position(|&v| v >= 2).unwrap_or(0);
-
-    let cpu_idx = FuzzySelect::with_theme(&theme)
-        .with_prompt("CPUs")
-        .items(&cpu_labels)
-        .default(default_cpu_idx)
-        .interact()?;
-    let cpus = cpu_values[cpu_idx];
+    let cpus = if let Some(c) = cpus_opt {
+        // Non-interactive: use provided value (validate it's available)
+        if !cpu_values.contains(&c) {
+            anyhow::bail!("CPU count {} not available (max: {})", c, cpu_values.last().unwrap_or(&0));
+        }
+        c
+    } else {
+        // Interactive: prompt user
+        let default_cpu_idx = cpu_values.iter().position(|&v| v >= 2).unwrap_or(0);
+        let cpu_idx = FuzzySelect::with_theme(&theme)
+            .with_prompt("CPUs")
+            .items(&cpu_labels)
+            .default(default_cpu_idx)
+            .interact()?;
+        cpu_values[cpu_idx]
+    };
 
     // Generate disk size options based on selected disk
     let (disk_options, disk_values) = generate_disk_options(selected_disk);
 
-    let disk_idx = FuzzySelect::with_theme(&theme)
-        .with_prompt("Disk size")
-        .items(&disk_options)
-        .default(disk_options.len().min(3).saturating_sub(1)) // Default to middle option
-        .interact()?;
-    let disk_size = disk_values[disk_idx];
+    let disk_size: Option<u32> = if let Some(d) = disk_opt {
+        // Non-interactive: use provided value
+        Some(d as u32)
+    } else {
+        // Interactive: prompt user
+        let disk_idx = FuzzySelect::with_theme(&theme)
+            .with_prompt("Disk size")
+            .items(&disk_options)
+            .default(disk_options.len().min(3).saturating_sub(1))
+            .interact()?;
+        disk_values[disk_idx]
+    };
 
-    // Show summary
-    println!();
-    let disk_display = disk_size.map_or("Default".to_string(), |s| format!("{} GB", s));
-    ui::print_box("Deployment Summary", &[
-        ("Node", &format!("{} ({})", node.hostname, node_ip)),
-        ("Image", image_path.file_name().unwrap().to_str().unwrap()),
-        ("VM Name", &vm_name),
-        ("Memory", &ui::format_memory(memory)),
-        ("CPUs", &cpus.to_string()),
-        ("Disk", &disk_display),
-    ]);
+    // Show summary (skip in non-interactive mode)
+    if !non_interactive {
+        println!();
+        let disk_display = disk_size.map_or("Default".to_string(), |s| format!("{} GB", s));
+        ui::print_box("Deployment Summary", &[
+            ("Node", &format!("{} ({})", node.hostname, node_ip)),
+            ("Image", image_path.file_name().unwrap().to_str().unwrap()),
+            ("VM Name", &vm_name),
+            ("Memory", &ui::format_memory(memory)),
+            ("CPUs", &cpus.to_string()),
+            ("Disk", &disk_display),
+        ]);
 
-    // Confirm deployment
-    let proceed = Confirm::with_theme(&theme)
-        .with_prompt("Deploy VM?")
-        .default(true)
-        .interact()?;
+        // Confirm deployment
+        let proceed = Confirm::with_theme(&theme)
+            .with_prompt("Deploy VM?")
+            .default(true)
+            .interact()?;
 
-    if !proceed {
-        println!("{}", style("Deployment cancelled").dim());
-        return Ok(());
+        if !proceed {
+            println!("{}", style("Deployment cancelled").dim());
+            return Ok(());
+        }
     }
 
     println!();
 
     // Check if this is a cloud image that needs cloud-init
     let seed_iso_path = if needs_cloud_init(&image_path) {
-        Some(create_cloud_init_iso(&vm_name, &theme)?)
+        Some(create_cloud_init_iso(&vm_name, &theme, non_interactive)?)
     } else {
         None
     };
@@ -513,22 +556,29 @@ fn needs_cloud_init(image_path: &std::path::Path) -> bool {
                 || filename.contains("fedora")))
 }
 
-fn create_cloud_init_iso(hostname: &str, theme: &ColorfulTheme) -> Result<PathBuf> {
-    println!();
-    ui::print_header("Cloud-Init Configuration");
-
-    let enable_password = Confirm::with_theme(theme)
-        .with_prompt("Enable SSH password login?")
-        .default(true)
-        .interact()?;
-
-    let root_password = if enable_password {
-        Input::with_theme(theme)
-            .with_prompt("Root password")
-            .default("cave".to_string())
-            .interact_text()?
+fn create_cloud_init_iso(hostname: &str, theme: &ColorfulTheme, non_interactive: bool) -> Result<PathBuf> {
+    // In non-interactive mode, use defaults (password login enabled with "cave" password)
+    let (enable_password, root_password) = if non_interactive {
+        (true, "cave".to_string())
     } else {
-        "".to_string()
+        println!();
+        ui::print_header("Cloud-Init Configuration");
+
+        let enable = Confirm::with_theme(theme)
+            .with_prompt("Enable SSH password login?")
+            .default(true)
+            .interact()?;
+
+        let password = if enable {
+            Input::with_theme(theme)
+                .with_prompt("Root password")
+                .default("cave".to_string())
+                .interact_text()?
+        } else {
+            "".to_string()
+        };
+
+        (enable, password)
     };
 
     // Get SSH public key

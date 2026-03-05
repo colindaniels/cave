@@ -9,7 +9,7 @@ use crate::ssh::SshConnection;
 use crate::ui;
 use crate::vm;
 
-pub async fn run(hostname: &str, vm_name: &str) -> Result<()> {
+pub async fn run(hostname: &str, vm_name: &str, force: bool) -> Result<()> {
     let config = Config::load()?;
     let theme = ColorfulTheme::default();
 
@@ -37,24 +37,26 @@ pub async fn run(hostname: &str, vm_name: &str) -> Result<()> {
         return Ok(());
     }
 
-    // Confirm destruction
-    println!();
-    println!(
-        "  {} {} on {}",
-        style("VM:").dim(),
-        style(vm_name).cyan().bold(),
-        style(&node.hostname).cyan()
-    );
-    println!();
+    // Confirm destruction (skip if --force)
+    if !force {
+        println!();
+        println!(
+            "  {} {} on {}",
+            style("VM:").dim(),
+            style(vm_name).cyan().bold(),
+            style(&node.hostname).cyan()
+        );
+        println!();
 
-    let confirm = Confirm::with_theme(&theme)
-        .with_prompt(format!("Destroy VM '{}'?", vm_name))
-        .default(false)
-        .interact()?;
+        let confirm = Confirm::with_theme(&theme)
+            .with_prompt(format!("Destroy VM '{}'?", vm_name))
+            .default(false)
+            .interact()?;
 
-    if !confirm {
-        println!("{}", style("Cancelled").dim());
-        return Ok(());
+        if !confirm {
+            println!("{}", style("Cancelled").dim());
+            return Ok(());
+        }
     }
 
     // Stop and delete the VM

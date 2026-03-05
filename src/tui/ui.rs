@@ -70,6 +70,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Overlay::None => {}
         Overlay::NodeActions => draw_node_actions_overlay(f, app),
         Overlay::Deploy(step) => draw_deploy_overlay(f, app, step.clone()),
+        Overlay::ActionProgress(msg) => draw_action_progress_overlay(f, msg),
         Overlay::ImageDownload => draw_image_download_overlay(f, app),
         Overlay::NodeInit => draw_node_init_overlay(f, app),
         Overlay::Help => draw_help_overlay(f),
@@ -849,6 +850,37 @@ fn draw_help_overlay(f: &mut Frame) {
     ];
 
     let para = Paragraph::new(lines);
+    f.render_widget(para, inner);
+}
+
+// ============================================================================
+// Action Progress Overlay
+// ============================================================================
+
+fn draw_action_progress_overlay(f: &mut Frame, message: &str) {
+    let area = centered_rect(40, 7, f.area());
+
+    // Clear area
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Please Wait ")
+        .title_style(Style::default().fg(MAUVE).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(MAUVE))
+        .style(Style::default().bg(BASE));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(message, Style::default().fg(MAUVE).add_modifier(Modifier::BOLD))),
+        Line::from(""),
+    ];
+
+    let para = Paragraph::new(lines).alignment(Alignment::Center);
     f.render_widget(para, inner);
 }
 

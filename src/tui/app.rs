@@ -23,6 +23,7 @@ pub enum Overlay {
     None,
     NodeActions,  // Action menu for selected node
     Deploy(DeployStep),
+    ActionProgress(String),  // Running an action (e.g., "Destroying VM...")
     ImageDownload,
     NodeInit,
     Help,
@@ -105,6 +106,16 @@ pub struct App {
     pub deploy_cpu_idx: usize,
     pub deploy_disk_size_idx: usize,    // How much storage on that disk
     pub deploy_config_field: usize,     // 0=memory, 1=cpu, 2=disk size
+    pub deploy_pending: bool,           // True when deploy should run on next tick
+    pub deploy_waiting_for_ip: bool,    // True when waiting for VM to get IP
+    pub deploy_target: Option<String>,  // Hostname we're deploying to
+    pub deploy_wait_start: Option<Instant>, // When we started waiting
+    pub deploy_last_poll: Option<Instant>,  // Last time we polled for VM IP
+    pub destroy_waiting: bool,              // True when waiting for VM to be destroyed
+    pub destroy_target: Option<String>,     // Hostname we're waiting to confirm destroy
+    pub destroy_wait_start: Option<Instant>,
+    pub destroy_last_poll: Option<Instant>,
+    pub pending_action: Option<String>, // Pending node action (destroy, wake, etc.)
 
     // Node init form
     pub node_init_hostname: String,
@@ -144,6 +155,16 @@ impl App {
             deploy_cpu_idx: 1,    // Default 2 CPUs
             deploy_disk_size_idx: 2,   // Default 50GB
             deploy_config_field: 0,
+            deploy_pending: false,
+            deploy_waiting_for_ip: false,
+            deploy_target: None,
+            deploy_wait_start: None,
+            deploy_last_poll: None,
+            destroy_waiting: false,
+            destroy_target: None,
+            destroy_wait_start: None,
+            destroy_last_poll: None,
+            pending_action: None,
             node_init_hostname: String::new(),
             node_init_mac: String::new(),
             node_init_field: 0,
@@ -265,6 +286,134 @@ impl App {
         self.status_message = Some((msg.to_string(), Instant::now()));
     }
 
+    /// Check if VM has gotten an IP yet. Returns Some(ip) if found.
+    pub fn check_vm_ip(&self, hostname: &str) -> Option<String> {
+        self.nodes.iter()
+            .find(|n| n.hostname == hostname)
+            .and_then(|n| n.vm.as_ref())
+            .filter(|vm| !vm.ip.is_empty())
+            .map(|vm| vm.ip.clone())
+    }
+
+    /// Poll and check if waiting VM has IP. Returns true if done waiting.
+    pub fn check_deploy_complete(&mut self) -> bool {
+        if !self.deploy_waiting_for_ip {
+            return false;
+        }
+
+        // Only poll every 3 seconds
+        let should_poll = match self.deploy_last_poll {
+            Some(last) => last.elapsed() >= Duration::from_secs(3),
+            None => true,
+        };
+
+        if !should_poll {
+            return false;
+        }
+
+        self.deploy_last_poll = Some(Instant::now());
+
+        let hostname = match &self.deploy_target {
+            Some(h) => h.clone(),
+            None => {
+                self.deploy_waiting_for_ip = false;
+                return true;
+            }
+        };
+
+        // Poll to refresh cache
+        let _ = Command::new("cave").args(["poll"]).output();
+        self.refresh_data();
+
+        // Check if VM has IP
+        if let Some(ip) = self.check_vm_ip(&hostname) {
+            self.deploy_waiting_for_ip = false;
+            self.deploy_target = None;
+            self.deploy_wait_start = None;
+            self.deploy_last_poll = None;
+            self.overlay = Overlay::None;
+            self.set_status(&format!("VM running at {}", ip));
+            return true;
+        }
+
+        // Timeout after 2 minutes
+        if let Some(start) = self.deploy_wait_start {
+            if start.elapsed() > Duration::from_secs(120) {
+                self.deploy_waiting_for_ip = false;
+                self.deploy_target = None;
+                self.deploy_wait_start = None;
+                self.deploy_last_poll = None;
+                self.overlay = Overlay::None;
+                self.set_status("VM deployed but IP not found (timeout)");
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Poll and check if VM has been destroyed. Returns true if done waiting.
+    pub fn check_destroy_complete(&mut self) -> bool {
+        if !self.destroy_waiting {
+            return false;
+        }
+
+        // Only poll every 3 seconds
+        let should_poll = match self.destroy_last_poll {
+            Some(last) => last.elapsed() >= Duration::from_secs(3),
+            None => true,
+        };
+
+        if !should_poll {
+            return false;
+        }
+
+        self.destroy_last_poll = Some(Instant::now());
+
+        let hostname = match &self.destroy_target {
+            Some(h) => h.clone(),
+            None => {
+                self.destroy_waiting = false;
+                return true;
+            }
+        };
+
+        // Poll to refresh cache
+        let _ = Command::new("cave").args(["poll"]).output();
+        self.refresh_data();
+
+        // Check if VM is gone (node has no VM or VM is None)
+        let vm_gone = self.nodes.iter()
+            .find(|n| n.hostname == hostname)
+            .map(|n| n.vm.is_none())
+            .unwrap_or(true);
+
+        if vm_gone {
+            self.destroy_waiting = false;
+            self.destroy_target = None;
+            self.destroy_wait_start = None;
+            self.destroy_last_poll = None;
+            self.overlay = Overlay::None;
+            self.set_status(&format!("VM destroyed on {}", hostname));
+            return true;
+        }
+
+        // Timeout after 30 seconds
+        if let Some(start) = self.destroy_wait_start {
+            if start.elapsed() > Duration::from_secs(30) {
+                self.destroy_waiting = false;
+                self.destroy_target = None;
+                self.destroy_wait_start = None;
+                self.destroy_last_poll = None;
+                self.overlay = Overlay::None;
+                self.set_status("Destroy completed (timeout waiting for confirmation)");
+                return true;
+            }
+        }
+
+        false
+    }
+
     // Get max memory index based on node's RAM
     pub fn max_memory_idx(&self) -> usize {
         let Some(node) = self.selected_node() else {
@@ -347,6 +496,7 @@ impl App {
             Overlay::ImageDownload => self.handle_image_download_keys(code),
             Overlay::NodeInit => self.handle_node_init_keys(code),
             Overlay::Help => self.handle_help_keys(code),
+            Overlay::ActionProgress(_) => {} // No input during action
         }
     }
 
@@ -433,28 +583,28 @@ impl App {
             }
             1 => {
                 // Destroy VM
-                self.execute_node_action("destroy");
-                self.overlay = Overlay::None;
+                self.pending_action = Some("destroy".to_string());
+                self.overlay = Overlay::ActionProgress("Destroying VM...".to_string());
             }
             2 => {
                 // Wake (WoL)
-                self.execute_node_action("wake");
-                self.overlay = Overlay::None;
+                self.pending_action = Some("wake".to_string());
+                self.overlay = Overlay::ActionProgress("Waking node...".to_string());
             }
             3 => {
                 // Shutdown
-                self.execute_node_action("shutdown");
-                self.overlay = Overlay::None;
+                self.pending_action = Some("shutdown".to_string());
+                self.overlay = Overlay::ActionProgress("Shutting down...".to_string());
             }
             4 => {
                 // Restart
-                self.execute_node_action("restart");
-                self.overlay = Overlay::None;
+                self.pending_action = Some("restart".to_string());
+                self.overlay = Overlay::ActionProgress("Restarting...".to_string());
             }
             5 => {
                 // Remove Node
-                self.execute_node_action("remove");
-                self.overlay = Overlay::None;
+                self.pending_action = Some("remove".to_string());
+                self.overlay = Overlay::ActionProgress("Removing node...".to_string());
             }
             _ => {}
         }
@@ -560,8 +710,9 @@ impl App {
             DeployStep::Confirm => match code {
                 KeyCode::Esc => self.overlay = Overlay::Deploy(DeployStep::Configure),
                 KeyCode::Enter | KeyCode::Char('y') => {
+                    // Set pending flag - deploy will run on next tick after UI updates
+                    self.deploy_pending = true;
                     self.overlay = Overlay::Deploy(DeployStep::Deploying);
-                    self.execute_deploy();
                 }
                 KeyCode::Char('n') => self.overlay = Overlay::None,
                 _ => {}
@@ -702,14 +853,33 @@ impl App {
     fn execute_node_action(&mut self, action: &str) {
         if let Some(node) = self.selected_node() {
             let hostname = node.hostname.clone();
+
+            // Build args - destroy needs -y to skip confirmation
+            let args: Vec<&str> = if action == "destroy" {
+                vec!["node", action, &hostname, "-y"]
+            } else {
+                vec!["node", action, &hostname]
+            };
+
             let result = Command::new("cave")
-                .args(["node", action, &hostname])
+                .args(&args)
                 .output();
 
             match result {
                 Ok(output) => {
                     if output.status.success() {
+                        // For destroy, enter waiting state to confirm VM is gone
+                        if action == "destroy" {
+                            self.destroy_waiting = true;
+                            self.destroy_target = Some(hostname.clone());
+                            self.destroy_wait_start = Some(Instant::now());
+                            self.overlay = Overlay::ActionProgress("Confirming VM destroyed...".to_string());
+                            return; // Don't clear overlay yet
+                        }
+
                         self.set_status(&format!("{} {}: success", action, hostname));
+                        // Poll to refresh cache after state-changing actions
+                        let _ = Command::new("cave").args(["poll"]).output();
                     } else {
                         let err = String::from_utf8_lossy(&output.stderr);
                         self.set_status(&format!("{} failed: {}", action, err.trim()));
@@ -726,7 +896,8 @@ impl App {
         let image_name = match images.get(self.deploy_image_idx) {
             Some((name, _)) => name.clone(),
             None => {
-                self.overlay = Overlay::Deploy(DeployStep::Done);
+                self.set_status("No image selected");
+                self.overlay = Overlay::None;
                 return;
             }
         };
@@ -734,7 +905,8 @@ impl App {
         let hostname = match self.selected_node() {
             Some(node) => node.hostname.clone(),
             None => {
-                self.overlay = Overlay::Deploy(DeployStep::Done);
+                self.set_status("No node selected");
+                self.overlay = Overlay::None;
                 return;
             }
         };
@@ -743,10 +915,10 @@ impl App {
         let cpus = CPU_OPTIONS[self.deploy_cpu_idx].0;
         let disk = DISK_OPTIONS[self.deploy_disk_size_idx].0;
 
+        // Run deploy command
         let result = Command::new("cave")
             .args([
-                "node", "deploy", &hostname,
-                "--image", &image_name,
+                "node", "deploy", &hostname, &image_name,
                 "--memory", &memory.to_string(),
                 "--cpus", &cpus.to_string(),
                 "--disk", &disk.to_string(),
@@ -756,16 +928,31 @@ impl App {
         match result {
             Ok(output) => {
                 if output.status.success() {
-                    self.set_status(&format!("Deployed to {}", hostname));
+                    // Enter waiting state - poll until VM has IP
+                    self.deploy_waiting_for_ip = true;
+                    self.deploy_target = Some(hostname.clone());
+                    self.deploy_wait_start = Some(Instant::now());
+                    self.overlay = Overlay::ActionProgress("Waiting for VM IP...".to_string());
+                    // Don't set overlay to None - stay in waiting state
+                    return;
                 } else {
                     let err = String::from_utf8_lossy(&output.stderr);
-                    self.set_status(&format!("Deploy failed: {}", err.trim()));
+                    let out = String::from_utf8_lossy(&output.stdout);
+                    let msg = if !err.trim().is_empty() {
+                        // Take last line of error for concise message
+                        err.lines().last().unwrap_or("Unknown error").to_string()
+                    } else if !out.trim().is_empty() {
+                        out.lines().last().unwrap_or("Unknown error").to_string()
+                    } else {
+                        format!("Exit code: {:?}", output.status.code())
+                    };
+                    self.set_status(&format!("Deploy failed: {}", msg));
                 }
             }
             Err(e) => self.set_status(&format!("Deploy error: {}", e)),
         }
 
-        self.overlay = Overlay::Deploy(DeployStep::Done);
+        self.overlay = Overlay::None;
     }
 
     fn execute_node_init(&mut self) {
@@ -827,6 +1014,23 @@ pub fn run() -> Result<()> {
     loop {
         terminal.draw(|f| ui::draw(f, &app))?;
 
+        // Check for pending deploy (runs after UI draws "Deploying...")
+        if app.deploy_pending {
+            app.deploy_pending = false;
+            app.execute_deploy();
+            continue; // Redraw immediately after deploy
+        }
+
+        // Check for pending node action (runs after UI draws progress)
+        if let Some(action) = app.pending_action.take() {
+            app.execute_node_action(&action);
+            // Don't clear overlay if we're now in a waiting state
+            if !app.destroy_waiting {
+                app.overlay = Overlay::None;
+            }
+            continue; // Redraw immediately after action
+        }
+
         let timeout = tick_rate
             .checked_sub(last_tick.elapsed())
             .unwrap_or_else(|| Duration::from_secs(0));
@@ -841,6 +1045,16 @@ pub fn run() -> Result<()> {
 
         if last_tick.elapsed() >= tick_rate {
             last_tick = Instant::now();
+
+            // Check if waiting for VM IP (poll every tick while waiting)
+            if app.deploy_waiting_for_ip {
+                app.check_deploy_complete();
+            }
+
+            // Check if waiting for VM destroy confirmation
+            if app.destroy_waiting {
+                app.check_destroy_complete();
+            }
 
             // Clear old status messages
             if let Some((_, created)) = &app.status_message {

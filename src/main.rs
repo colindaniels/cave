@@ -96,14 +96,26 @@ enum NodeAction {
         hostname: Option<String>,
         /// Image name to deploy (interactive if not provided)
         image: Option<String>,
+        /// Memory in MB (e.g., 4096 for 4GB)
+        #[arg(long)]
+        memory: Option<u32>,
+        /// Number of CPUs
+        #[arg(long)]
+        cpus: Option<u32>,
+        /// Disk size in GB
+        #[arg(long)]
+        disk: Option<u64>,
     },
     /// Stop and remove the VM on a node
     Destroy {
         /// Hostname of the node
         hostname: String,
-        /// VM name (defaults to node hostname if not specified)
+        /// VM name (defaults to <hostname>-vm if not specified)
         #[arg(long)]
         name: Option<String>,
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long)]
+        force: bool,
     },
     /// Remove a node from the registry
     Remove {
@@ -160,12 +172,13 @@ async fn main() -> anyhow::Result<()> {
         Commands::Node { action } => match action {
             NodeAction::Init { hostname, mac } => init::run(&hostname, &mac).await?,
             NodeAction::List => list::run().await?,
-            NodeAction::Deploy { hostname, image } => {
-                deploy::run(hostname.as_deref(), image.as_deref()).await?
+            NodeAction::Deploy { hostname, image, memory, cpus, disk } => {
+                deploy::run(hostname.as_deref(), image.as_deref(), memory, cpus, disk).await?
             }
-            NodeAction::Destroy { hostname, name } => {
-                let vm_name = name.as_deref().unwrap_or(&hostname);
-                destroy::run(&hostname, vm_name).await?
+            NodeAction::Destroy { hostname, name, force } => {
+                let default_name = format!("{}-vm", hostname);
+                let vm_name = name.as_deref().unwrap_or(&default_name);
+                destroy::run(&hostname, vm_name, force).await?
             }
             NodeAction::Remove { hostname } => remove::run(&hostname).await?,
             NodeAction::Wake { hostname } => wake::run(&hostname).await?,
