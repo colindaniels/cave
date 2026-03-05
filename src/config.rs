@@ -139,8 +139,10 @@ pub struct CachedNode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedDisk {
+    pub name: String,       // e.g., "nvme0n1", "sda"
     pub size_bytes: u64,
     pub disk_type: String,
+    pub model: String,      // Disk model name
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

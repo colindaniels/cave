@@ -8,6 +8,9 @@ use crate::vm;
 
 /// Background poll: scan network, update IP cache, SSH config, and full node cache
 pub async fn run() -> Result<()> {
+    // Ensure SSH include is set up (for existing installs)
+    let _ = ssh::setup_ssh_include();
+
     let config = Config::load()?;
 
     if config.nodes.is_empty() {
@@ -56,8 +59,10 @@ pub async fn run() -> Result<()> {
                     cores: info.specs.cores,
                     ram: info.specs.ram,
                     disks: info.specs.disks.iter().map(|d| CachedDisk {
+                        name: d.name.clone(),
                         size_bytes: d.size_bytes,
                         disk_type: d.disk_type.clone(),
+                        model: d.model.clone(),
                     }).collect(),
                     vm: vm_info,
                 }

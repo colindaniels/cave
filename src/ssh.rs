@@ -50,12 +50,58 @@ pub fn generate_keypair() -> Result<()> {
     Ok(())
 }
 
-pub fn update_ssh_config(hostname: &str, ip: &str) -> Result<()> {
-    let ssh_config_path = dirs::home_dir()
+/// Get path to cave's SSH config file
+pub fn cave_ssh_config_path() -> std::path::PathBuf {
+    Config::ssh_dir().join("config")
+}
+
+/// Ensure ~/.ssh/config includes cave's SSH config
+pub fn setup_ssh_include() -> Result<()> {
+    let user_ssh_config = dirs::home_dir()
         .expect("Could not find home directory")
         .join(".ssh")
         .join("config");
 
+    let cave_config = cave_ssh_config_path();
+    let include_line = format!("Include {}", cave_config.display());
+
+    // Ensure ~/.ssh directory exists
+    if let Some(parent) = user_ssh_config.parent() {
+        fs::create_dir_all(parent).context("Failed to create .ssh directory")?;
+    }
+
+    // Ensure cave ssh directory exists
+    Config::ensure_dirs()?;
+
+    // Create empty cave config if it doesn't exist
+    if !cave_config.exists() {
+        fs::write(&cave_config, "# Cave managed SSH hosts\n")
+            .context("Failed to create cave SSH config")?;
+    }
+
+    // Read existing user config
+    let existing = if user_ssh_config.exists() {
+        fs::read_to_string(&user_ssh_config)
+            .context("Failed to read SSH config")?
+    } else {
+        String::new()
+    };
+
+    // Check if Include is already present
+    if existing.contains(&include_line) {
+        return Ok(());
+    }
+
+    // Add Include at the top of the file
+    let new_content = format!("{}\n\n{}", include_line, existing);
+    fs::write(&user_ssh_config, new_content)
+        .context("Failed to write SSH config")?;
+
+    Ok(())
+}
+
+pub fn update_ssh_config(hostname: &str, ip: &str) -> Result<()> {
+    let ssh_config_path = cave_ssh_config_path();
     let private_key = Config::ssh_private_key();
 
     let host_entry = format!(
@@ -63,24 +109,22 @@ pub fn update_ssh_config(hostname: &str, ip: &str) -> Result<()> {
         hostname, hostname, ip, private_key.display()
     );
 
+    // Ensure cave ssh directory exists
+    Config::ensure_dirs()?;
+
     // Read existing config
     let existing = if ssh_config_path.exists() {
         fs::read_to_string(&ssh_config_path)
-            .context("Failed to read SSH config")?
+            .context("Failed to read cave SSH config")?
     } else {
-        String::new()
+        "# Cave managed SSH hosts\n".to_string()
     };
-
-    // Ensure .ssh directory exists
-    if let Some(parent) = ssh_config_path.parent() {
-        fs::create_dir_all(parent).context("Failed to create .ssh directory")?;
-    }
 
     // Remove existing entry if present, then add new one
     let cleaned = remove_cave_entry(&existing, hostname);
     let new_content = format!("{}{}", cleaned, host_entry);
     fs::write(&ssh_config_path, new_content)
-        .context("Failed to write SSH config")?;
+        .context("Failed to write cave SSH config")?;
 
     Ok(())
 }
@@ -113,17 +157,14 @@ fn remove_cave_entry(content: &str, hostname: &str) -> String {
 }
 
 pub fn remove_ssh_config(hostname: &str) -> Result<()> {
-    let ssh_config_path = dirs::home_dir()
-        .expect("Could not find home directory")
-        .join(".ssh")
-        .join("config");
+    let ssh_config_path = cave_ssh_config_path();
 
     if !ssh_config_path.exists() {
         return Ok(());
     }
 
     let content = fs::read_to_string(&ssh_config_path)
-        .context("Failed to read SSH config")?;
+        .context("Failed to read cave SSH config")?;
 
     let lines: Vec<&str> = content.lines().collect();
     let mut new_lines: Vec<&str> = Vec::new();
@@ -151,8 +192,7 @@ pub fn remove_ssh_config(hostname: &str) -> Result<()> {
     if found {
         let new_content = new_lines.join("\n");
         fs::write(&ssh_config_path, new_content)
-            .context("Failed to write SSH config")?;
-        println!("Removed SSH config entry for '{}'", hostname);
+            .context("Failed to write cave SSH config")?;
     }
 
     Ok(())

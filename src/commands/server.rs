@@ -45,6 +45,12 @@ pub async fn init(port: u16) -> Result<()> {
     spinner.finish_and_clear();
     ui::print_success("SSH keys generated");
 
+    // Setup SSH config include
+    let spinner = create_spinner("Setting up SSH config...");
+    ssh::setup_ssh_include()?;
+    spinner.finish_and_clear();
+    ui::print_success("SSH config configured");
+
     // Download Alpine netboot files
     download_alpine_files().await?;
 

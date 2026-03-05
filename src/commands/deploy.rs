@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::commands::images::get_image_display_name;
-use crate::config::{scan_for_ip, Config};
+use crate::config::{load_node_cache, scan_for_ip, Config};
 use crate::ssh::{self, SshConnection};
 use crate::status::{get_disk_info, get_node_resources, get_node_status, DiskInfo, NodeStatus};
 use crate::ui;
@@ -97,10 +97,29 @@ pub async fn run(hostname: Option<&str>, image: Option<&str>) -> Result<()> {
         Config::images_dir().join(&images[selection].0)
     };
 
-    // VM name
+    // VM name (default to hostname-vm to avoid SSH config conflicts)
+    let default_vm_name = format!("{}-vm", node.hostname);
     let vm_name: String = Input::with_theme(&theme)
         .with_prompt("VM name")
-        .default(node.hostname.clone())
+        .default(default_vm_name)
+        .validate_with(|input: &String| -> Result<(), &str> {
+            let name = input.trim();
+            if name.is_empty() {
+                return Err("VM name cannot be empty");
+            }
+            // Check against node hostnames
+            if let Ok(cfg) = Config::load() {
+                if cfg.nodes.iter().any(|n| n.hostname == name) {
+                    return Err("VM name conflicts with a node hostname");
+                }
+            }
+            // Check against existing VM names
+            let cache = load_node_cache();
+            if cache.iter().any(|n| n.vm.as_ref().map(|v| v.name.as_str()) == Some(name)) {
+                return Err("A VM with this name already exists");
+            }
+            Ok(())
+        })
         .interact_text()?;
 
     // Connect to node to get disk info and resources

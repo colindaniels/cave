@@ -1,442 +1,279 @@
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style, Stylize},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{
-        Block, Borders, BorderType, List, ListItem, Paragraph, Row, Table,
-    },
+    widgets::{Block, Borders, BorderType, Clear, List, ListItem, Paragraph},
     Frame,
 };
 
-use super::app::{App, Screen, NODE_ACTIONS};
-use super::widgets::logo;
+use super::app::{
+    App, DeployStep, Overlay, CPU_OPTIONS, DISK_OPTIONS, MEMORY_OPTIONS, NODE_ACTIONS,
+};
+use super::widgets::logo::LOGO;
 use crate::commands::images::CLOUD_IMAGES;
 
-// Color scheme - Catppuccin Mocha inspired
-const BG: Color = Color::Rgb(30, 30, 46);
-const SURFACE: Color = Color::Rgb(49, 50, 68);
-const OVERLAY: Color = Color::Rgb(69, 71, 90);
+// ============================================================================
+// Color Scheme - Catppuccin Mocha
+// ============================================================================
+
+const BASE: Color = Color::Rgb(30, 30, 46);
+const SURFACE0: Color = Color::Rgb(49, 50, 68);
+const SURFACE1: Color = Color::Rgb(69, 71, 90);
 const TEXT: Color = Color::Rgb(205, 214, 244);
 const SUBTEXT: Color = Color::Rgb(166, 173, 200);
-const LAVENDER: Color = Color::Rgb(180, 190, 254);
-const BLUE: Color = Color::Rgb(137, 180, 250);
-const SAPPHIRE: Color = Color::Rgb(116, 199, 236);
 const GREEN: Color = Color::Rgb(166, 227, 161);
 const YELLOW: Color = Color::Rgb(249, 226, 175);
-const PEACH: Color = Color::Rgb(250, 179, 135);
 const RED: Color = Color::Rgb(243, 139, 168);
+const BLUE: Color = Color::Rgb(137, 180, 250);
 const MAUVE: Color = Color::Rgb(203, 166, 247);
+const LAVENDER: Color = Color::Rgb(180, 190, 254);
+
+// ============================================================================
+// Main Draw
+// ============================================================================
 
 pub fn draw(f: &mut Frame, app: &App) {
-    match app.screen {
-        Screen::Dashboard => draw_dashboard(f, app, f.area()),
-        Screen::NodeDetails => draw_node_details(f, app, f.area()),
-        Screen::Images => draw_images(f, app, f.area()),
-        Screen::ImageDownload => draw_image_download(f, app, f.area()),
-        Screen::Help => draw_help(f, f.area()),
-    }
+    let size = f.area();
 
-    // Draw status message if present
-    if let Some((ref msg, _)) = app.status_message {
-        draw_status_toast(f, msg);
-    }
-}
+    // Fill background
+    f.render_widget(Block::default().style(Style::default().bg(BASE)), size);
 
-fn draw_dashboard(f: &mut Frame, app: &App, area: Rect) {
-    let chunks = Layout::default()
+    // Main vertical layout: logo + stats bar + content area + status bar
+    let main_vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(8),  // Logo
-            Constraint::Min(10),    // Main content
-            Constraint::Length(3),  // Status bar
+            Constraint::Length(8),  // Logo (full width)
+            Constraint::Length(5),  // Stats bar (full width)
+            Constraint::Min(10),    // Content area (nodes + details + server panel)
+            Constraint::Length(1),  // Status bar (full width)
         ])
-        .split(area);
+        .split(size);
 
-    // Logo
-    draw_logo(f, chunks[0]);
+    draw_logo(f, main_vertical[0]);
+    draw_stats_bar(f, app, main_vertical[1]);
+    draw_status_bar(f, app, main_vertical[3]);
 
-    // Main content - two columns
-    let main_chunks = Layout::default()
+    // Content area: split horizontally into main content and server panel
+    let content_horizontal = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(65), // Nodes
-            Constraint::Percentage(35), // Status panel
+            Constraint::Min(50),      // Left: nodes + details
+            Constraint::Length(32),   // Right: server panel
         ])
-        .split(chunks[1]);
+        .split(main_vertical[2]);
 
-    draw_nodes_panel(f, app, main_chunks[0]);
-    draw_status_panel(f, app, main_chunks[1]);
+    draw_main_content(f, app, content_horizontal[0]);
+    draw_server_panel(f, app, content_horizontal[1]);
 
-    // Status bar
-    draw_status_bar(f, app, chunks[2]);
+    // Draw overlays on top
+    match &app.overlay {
+        Overlay::None => {}
+        Overlay::NodeActions => draw_node_actions_overlay(f, app),
+        Overlay::Deploy(step) => draw_deploy_overlay(f, app, step.clone()),
+        Overlay::ImageDownload => draw_image_download_overlay(f, app),
+        Overlay::NodeInit => draw_node_init_overlay(f, app),
+        Overlay::Help => draw_help_overlay(f),
+    }
 }
 
+// ============================================================================
+// Logo
+// ============================================================================
+
 fn draw_logo(f: &mut Frame, area: Rect) {
-    let logo_text = logo::LOGO;
-    let logo = Paragraph::new(logo_text)
-        .style(Style::default().fg(MAUVE))
+    let logo_lines: Vec<Line> = LOGO
+        .lines()
+        .map(|line| Line::from(Span::styled(line, Style::default().fg(MAUVE))))
+        .collect();
+
+    let logo = Paragraph::new(logo_lines)
         .alignment(Alignment::Center)
-        .block(Block::default());
+        .style(Style::default().bg(BASE));
+
     f.render_widget(logo, area);
 }
 
-fn draw_nodes_panel(f: &mut Frame, app: &App, area: Rect) {
+// ============================================================================
+// Top Stats Bar
+// ============================================================================
+
+fn draw_stats_bar(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
-        .title(Line::from(vec![
-            Span::raw(" "),
-            Span::styled("󰒋 ", Style::default().fg(BLUE)),
-            Span::styled("Nodes", Style::default().fg(TEXT).bold()),
-            Span::raw(" "),
-        ]))
+        .title(" Cluster Overview ")
+        .title_style(Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(LAVENDER))
-        .style(Style::default().bg(BG));
+        .border_style(Style::default().fg(SURFACE1))
+        .style(Style::default().bg(BASE));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // Count nodes by status
+    let online = app.nodes.iter().filter(|n| n.status == "active").count();
+    let standby = app.nodes.iter().filter(|n| n.status == "standby").count();
+    let offline = app.nodes.iter().filter(|n| n.status == "offline").count();
+    let with_vm = app.nodes.iter().filter(|n| n.vm.is_some()).count();
+
+    // Calculate total disk from all nodes
+    let total_disk: u64 = app.nodes.iter()
+        .flat_map(|n| n.disks.iter())
+        .map(|d| d.size_bytes)
+        .sum();
+
+    let stats_layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Ratio(1, 4),
+            Constraint::Ratio(1, 4),
+            Constraint::Ratio(1, 4),
+            Constraint::Ratio(1, 4),
+        ])
+        .split(inner);
+
+    // Nodes stat
+    let nodes_text = vec![
+        Line::from(vec![
+            Span::styled(format!("{}", online), Style::default().fg(GREEN).add_modifier(Modifier::BOLD)),
+            Span::styled(" online ", Style::default().fg(SUBTEXT)),
+            Span::styled(format!("{}", standby), Style::default().fg(YELLOW).add_modifier(Modifier::BOLD)),
+            Span::styled(" standby ", Style::default().fg(SUBTEXT)),
+            Span::styled(format!("{}", offline), Style::default().fg(if offline > 0 { RED } else { SUBTEXT }).add_modifier(Modifier::BOLD)),
+            Span::styled(" off", Style::default().fg(SUBTEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled(format!("{} VMs running", with_vm), Style::default().fg(SUBTEXT)),
+        ]),
+    ];
+    let nodes_para = Paragraph::new(nodes_text)
+        .block(Block::default().title("Nodes").title_style(Style::default().fg(TEXT)))
+        .alignment(Alignment::Center);
+    f.render_widget(nodes_para, stats_layout[0]);
+
+    // Total cores
+    let total_cores: u32 = app.nodes.iter()
+        .filter_map(|n| n.cores.parse::<u32>().ok())
+        .sum();
+    let cores_text = vec![
+        Line::from(vec![
+            Span::styled(format!("{}", total_cores), Style::default().fg(BLUE).add_modifier(Modifier::BOLD)),
+            Span::styled(" cores", Style::default().fg(SUBTEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("total capacity", Style::default().fg(SUBTEXT)),
+        ]),
+    ];
+    let cores_para = Paragraph::new(cores_text)
+        .block(Block::default().title("CPU").title_style(Style::default().fg(TEXT)))
+        .alignment(Alignment::Center);
+    f.render_widget(cores_para, stats_layout[1]);
+
+    // Disk stat
+    let disk_text = vec![
+        Line::from(vec![
+            Span::styled(format_size(total_disk), Style::default().fg(BLUE).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(vec![
+            Span::styled("total capacity", Style::default().fg(SUBTEXT)),
+        ]),
+    ];
+    let disk_para = Paragraph::new(disk_text)
+        .block(Block::default().title("Storage").title_style(Style::default().fg(TEXT)))
+        .alignment(Alignment::Center);
+    f.render_widget(disk_para, stats_layout[2]);
+
+    // Images stat
+    let images_text = vec![
+        Line::from(vec![
+            Span::styled(format!("{}", app.local_images.len()), Style::default().fg(BLUE).add_modifier(Modifier::BOLD)),
+            Span::styled(" local", Style::default().fg(SUBTEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled(format!("{} available", CLOUD_IMAGES.len()), Style::default().fg(SUBTEXT)),
+        ]),
+    ];
+    let images_para = Paragraph::new(images_text)
+        .block(Block::default().title("Images").title_style(Style::default().fg(TEXT)))
+        .alignment(Alignment::Center);
+    f.render_widget(images_para, stats_layout[3]);
+}
+
+// ============================================================================
+// Main Content (Node List + Node Details)
+// ============================================================================
+
+fn draw_main_content(f: &mut Frame, app: &App, area: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(30),  // Node list
+            Constraint::Percentage(70),  // Node details
+        ])
+        .split(area);
+
+    draw_node_list(f, app, chunks[0]);
+    draw_node_details(f, app, chunks[1]);
+}
+
+fn draw_node_list(f: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .title(" Nodes ")
+        .title_style(Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(SURFACE1))
+        .style(Style::default().bg(BASE));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
 
     if app.nodes.is_empty() {
-        let empty = Paragraph::new("\n  No nodes registered\n\n  Run: cave node init <hostname> <mac>")
-            .style(Style::default().fg(SUBTEXT));
+        let empty = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(Span::styled("No nodes", Style::default().fg(SUBTEXT))),
+            Line::from(""),
+            Line::from(Span::styled("Press 'n' to add one", Style::default().fg(SUBTEXT))),
+        ])
+        .alignment(Alignment::Center);
         f.render_widget(empty, inner);
         return;
     }
 
-    // Create table rows
-    let rows: Vec<Row> = app
+    let items: Vec<ListItem> = app
         .nodes
         .iter()
         .enumerate()
-        .flat_map(|(i, node)| {
-            let is_selected = i == app.selected_node_idx;
-
-            let (_status_color, status_icon) = match node.status.as_str() {
-                "active" => (GREEN, "●"),
-                "standby" => (YELLOW, "◐"),
-                _ => (RED, "○"),
+        .map(|(i, node)| {
+            let (indicator, color) = if node.vm.is_some() {
+                ("●", GREEN)  // Green: VM running
+            } else if node.status == "active" || node.status == "standby" {
+                ("●", YELLOW) // Yellow: online/standby but no VM
+            } else {
+                ("●", RED)    // Red: offline
             };
 
-            let row_style = if is_selected {
-                Style::default().bg(SURFACE).fg(TEXT)
+            let style = if i == app.selected_node_idx {
+                Style::default().fg(TEXT).bg(SURFACE0).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(TEXT)
             };
 
-            // Format specs compactly
-            let specs = if node.status != "offline" {
-                format!("{} · {}c/{}",
-                    truncate(&node.cpu, 16),
-                    node.cores.replace(" cores", ""),
-                    &node.ram
-                )
-            } else {
-                "─".to_string()
-            };
+            let mut lines = vec![
+                Line::from(vec![
+                    Span::styled(format!(" {} ", indicator), Style::default().fg(color)),
+                    Span::styled(&node.hostname, style),
+                ]),
+            ];
 
-            let ip_display = if node.status == "offline" {
-                "─".to_string()
-            } else {
-                node.ip.clone().unwrap_or_else(|| "─".to_string())
-            };
-
-            let mut rows = vec![Row::new(vec![
-                format!(" {} {}", status_icon, node.hostname),
-                ip_display,
-                node.status.clone(),
-                specs,
-            ])
-            .style(row_style)
-            .height(1)];
-
-            // Add VM row if present
+            // Add VM name indented below if present
             if let Some(ref vm) = node.vm {
-                let vm_ip = if vm.ip.is_empty() {
-                    "booting...".to_string()
-                } else {
-                    vm.ip.clone()
-                };
-                rows.push(
-                    Row::new(vec![
-                        format!("   └─ {}", vm.name),
-                        vm_ip,
-                        "running".to_string(),
-                        format!("{}, {} CPU", vm.memory, vm.cpus),
-                    ])
-                    .style(Style::default().fg(SAPPHIRE))
-                    .height(1),
-                );
+                lines.push(Line::from(vec![
+                    Span::styled("   └─ ", Style::default().fg(SURFACE1)),
+                    Span::styled(&vm.name, Style::default().fg(MAUVE)),
+                ]));
             }
 
-            rows
-        })
-        .collect();
-
-    let header = Row::new(vec!["Name", "IP", "Status", "Specs"])
-        .style(Style::default().fg(SUBTEXT).add_modifier(Modifier::BOLD))
-        .height(1);
-
-    let widths = [
-        Constraint::Percentage(25),
-        Constraint::Percentage(20),
-        Constraint::Percentage(15),
-        Constraint::Percentage(40),
-    ];
-
-    let table = Table::new(rows, widths)
-        .header(header)
-        .row_highlight_style(Style::default().bg(SURFACE));
-
-    f.render_widget(table, inner);
-}
-
-fn draw_status_panel(f: &mut Frame, app: &App, area: Rect) {
-    let block = Block::default()
-        .title(Line::from(vec![
-            Span::raw(" "),
-            Span::styled("󰒍 ", Style::default().fg(SAPPHIRE)),
-            Span::styled("Status", Style::default().fg(TEXT).bold()),
-            Span::raw(" "),
-        ]))
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(OVERLAY))
-        .style(Style::default().bg(BG));
-
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    let server_status = if app.server_running {
-        Line::from(vec![
-            Span::styled("● ", Style::default().fg(GREEN)),
-            Span::styled("Running", Style::default().fg(GREEN)),
-        ])
-    } else {
-        Line::from(vec![
-            Span::styled("○ ", Style::default().fg(RED)),
-            Span::styled("Stopped", Style::default().fg(RED)),
-        ])
-    };
-
-    let active_count = app.nodes.iter().filter(|n| n.status == "active").count();
-    let standby_count = app.nodes.iter().filter(|n| n.status == "standby").count();
-    let offline_count = app.nodes.iter().filter(|n| n.status == "offline").count();
-
-    let stats = vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(" PXE Server", Style::default().fg(SUBTEXT)),
-        ]),
-        server_status,
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(" Nodes", Style::default().fg(SUBTEXT)),
-        ]),
-        Line::from(vec![
-            Span::styled(format!(" {} ", active_count), Style::default().fg(GREEN)),
-            Span::styled("active", Style::default().fg(SUBTEXT)),
-        ]),
-        Line::from(vec![
-            Span::styled(format!(" {} ", standby_count), Style::default().fg(YELLOW)),
-            Span::styled("standby", Style::default().fg(SUBTEXT)),
-        ]),
-        Line::from(vec![
-            Span::styled(format!(" {} ", offline_count), Style::default().fg(RED)),
-            Span::styled("offline", Style::default().fg(SUBTEXT)),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(" Images", Style::default().fg(SUBTEXT)),
-        ]),
-        Line::from(vec![
-            Span::styled(format!(" {}", app.images.len()), Style::default().fg(TEXT)),
-        ]),
-    ];
-
-    let para = Paragraph::new(stats);
-    f.render_widget(para, inner);
-}
-
-fn draw_node_details(f: &mut Frame, app: &App, area: Rect) {
-    let node = match app.selected_node() {
-        Some(n) => n,
-        None => return,
-    };
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),  // Title
-            Constraint::Min(10),    // Content
-            Constraint::Length(3),  // Status bar
-        ])
-        .split(area);
-
-    // Title bar
-    let (status_color, status_icon) = match node.status.as_str() {
-        "active" => (GREEN, "●"),
-        "standby" => (YELLOW, "◐"),
-        _ => (RED, "○"),
-    };
-
-    let title = Paragraph::new(Line::from(vec![
-        Span::styled(" 󰒋 ", Style::default().fg(BLUE)),
-        Span::styled(&node.hostname, Style::default().fg(TEXT).bold()),
-        Span::raw("  "),
-        Span::styled(status_icon, Style::default().fg(status_color)),
-        Span::styled(format!(" {}", node.status), Style::default().fg(status_color)),
-    ]))
-    .style(Style::default().bg(SURFACE));
-    f.render_widget(title, chunks[0]);
-
-    // Main content - two columns
-    let main_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(50), // Info
-            Constraint::Percentage(50), // Actions
-        ])
-        .split(chunks[1]);
-
-    draw_node_info(f, app, main_chunks[0]);
-    draw_node_actions(f, app, main_chunks[1]);
-
-    // Status bar
-    draw_status_bar(f, app, chunks[2]);
-}
-
-fn draw_node_info(f: &mut Frame, app: &App, area: Rect) {
-    let node = match app.selected_node() {
-        Some(n) => n,
-        None => return,
-    };
-
-    let block = Block::default()
-        .title(Line::from(vec![
-            Span::raw(" "),
-            Span::styled("󰋊 ", Style::default().fg(PEACH)),
-            Span::styled("Specs", Style::default().fg(TEXT).bold()),
-            Span::raw(" "),
-        ]))
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(OVERLAY))
-        .style(Style::default().bg(BG));
-
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    let ip_display = node.ip.clone().unwrap_or_else(|| "─".to_string());
-
-    // Format disk info
-    let disk_info = if node.disks.is_empty() {
-        "No disks".to_string()
-    } else {
-        node.disks.iter().map(|d| {
-            let size = format_bytes(d.size_bytes);
-            format!("{} {}", size, d.disk_type)
-        }).collect::<Vec<_>>().join(" + ")
-    };
-
-    let mut info_lines = vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  Hostname: ", Style::default().fg(SUBTEXT)),
-            Span::styled(&node.hostname, Style::default().fg(TEXT).bold()),
-        ]),
-        Line::from(vec![
-            Span::styled("  MAC:      ", Style::default().fg(SUBTEXT)),
-            Span::styled(&node.mac, Style::default().fg(TEXT)),
-        ]),
-        Line::from(vec![
-            Span::styled("  IP:       ", Style::default().fg(SUBTEXT)),
-            Span::styled(&ip_display, Style::default().fg(SAPPHIRE)),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  CPU:      ", Style::default().fg(SUBTEXT)),
-            Span::styled(&node.cpu, Style::default().fg(TEXT)),
-        ]),
-        Line::from(vec![
-            Span::styled("  Cores:    ", Style::default().fg(SUBTEXT)),
-            Span::styled(&node.cores, Style::default().fg(TEXT)),
-        ]),
-        Line::from(vec![
-            Span::styled("  RAM:      ", Style::default().fg(SUBTEXT)),
-            Span::styled(&node.ram, Style::default().fg(TEXT)),
-        ]),
-        Line::from(vec![
-            Span::styled("  Disks:    ", Style::default().fg(SUBTEXT)),
-            Span::styled(&disk_info, Style::default().fg(TEXT)),
-        ]),
-    ];
-
-    // Add VM info if present
-    if let Some(ref vm) = node.vm {
-        info_lines.push(Line::from(""));
-        info_lines.push(Line::from(vec![
-            Span::styled("  VM", Style::default().fg(SAPPHIRE).bold()),
-        ]));
-        info_lines.push(Line::from(vec![
-            Span::styled("  Name:     ", Style::default().fg(SUBTEXT)),
-            Span::styled(&vm.name, Style::default().fg(SAPPHIRE)),
-        ]));
-        let vm_ip_display = if vm.ip.is_empty() { "booting..." } else { &vm.ip };
-        info_lines.push(Line::from(vec![
-            Span::styled("  IP:       ", Style::default().fg(SUBTEXT)),
-            Span::styled(vm_ip_display, Style::default().fg(SAPPHIRE)),
-        ]));
-        info_lines.push(Line::from(vec![
-            Span::styled("  Memory:   ", Style::default().fg(SUBTEXT)),
-            Span::styled(&vm.memory, Style::default().fg(TEXT)),
-        ]));
-        info_lines.push(Line::from(vec![
-            Span::styled("  CPUs:     ", Style::default().fg(SUBTEXT)),
-            Span::styled(&vm.cpus, Style::default().fg(TEXT)),
-        ]));
-    }
-
-    let para = Paragraph::new(info_lines);
-    f.render_widget(para, inner);
-}
-
-fn draw_node_actions(f: &mut Frame, app: &App, area: Rect) {
-    let block = Block::default()
-        .title(Line::from(vec![
-            Span::raw(" "),
-            Span::styled("󰌑 ", Style::default().fg(LAVENDER)),
-            Span::styled("Actions", Style::default().fg(TEXT).bold()),
-            Span::raw(" "),
-        ]))
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(LAVENDER))
-        .style(Style::default().bg(BG));
-
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    let items: Vec<ListItem> = NODE_ACTIONS
-        .iter()
-        .enumerate()
-        .map(|(i, (_, name, desc))| {
-            let is_selected = i == app.selected_action_idx;
-            let style = if is_selected {
-                Style::default().bg(LAVENDER).fg(BG)
-            } else {
-                Style::default().fg(TEXT)
-            };
-
-            ListItem::new(vec![
-                Line::from(vec![
-                    Span::styled(if is_selected { " ▸ " } else { "   " }, style),
-                    Span::styled(*name, style.bold()),
-                ]),
-                Line::from(vec![
-                    Span::styled("     ", Style::default()),
-                    Span::styled(*desc, Style::default().fg(SUBTEXT)),
-                ]),
-            ])
+            ListItem::new(lines).style(style)
         })
         .collect();
 
@@ -444,417 +281,662 @@ fn draw_node_actions(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(list, inner);
 }
 
-fn draw_images(f: &mut Frame, app: &App, area: Rect) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),  // Title
-            Constraint::Length(3),  // Search bar
-            Constraint::Min(10),    // Image list
-            Constraint::Length(3),  // Status bar
-        ])
-        .split(area);
-
-    let filtered = app.filtered_images();
-
-    let title = Paragraph::new(Line::from(vec![
-        Span::styled(" 󰋊 ", Style::default().fg(PEACH)),
-        Span::styled("Images", Style::default().fg(TEXT).bold()),
-        Span::styled(
-            format!("  {} of {} shown", filtered.len(), app.images.len()),
-            Style::default().fg(SUBTEXT),
-        ),
-    ]))
-    .style(Style::default().bg(SURFACE));
-    f.render_widget(title, chunks[0]);
-
-    // Search bar
-    let search_border_color = if app.image_search_active { LAVENDER } else { OVERLAY };
-    let search_block = Block::default()
-        .title(Line::from(vec![
-            Span::raw(" "),
-            Span::styled("󰍉 ", Style::default().fg(SAPPHIRE)),
-            Span::styled("Search", Style::default().fg(SUBTEXT)),
-            Span::raw(" "),
-        ]))
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(search_border_color))
-        .style(Style::default().bg(BG));
-
-    let search_inner = search_block.inner(chunks[1]);
-    f.render_widget(search_block, chunks[1]);
-
-    let cursor = if app.image_search_active { "▌" } else { "" };
-    let search_text = if app.image_search.is_empty() && !app.image_search_active {
-        Paragraph::new(Line::from(vec![
-            Span::styled(" Type to search or press ", Style::default().fg(SUBTEXT).dim()),
-            Span::styled("/", Style::default().fg(LAVENDER)),
-            Span::styled(" to focus", Style::default().fg(SUBTEXT).dim()),
-        ]))
-    } else {
-        Paragraph::new(Line::from(vec![
-            Span::styled(format!(" {}", app.image_search), Style::default().fg(TEXT)),
-            Span::styled(cursor, Style::default().fg(LAVENDER)),
-        ]))
-    };
-    f.render_widget(search_text, search_inner);
-
-    // Image list
+fn draw_node_details(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
+        .title(" Node Details ")
+        .title_style(Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(OVERLAY))
-        .style(Style::default().bg(BG));
-
-    let inner = block.inner(chunks[2]);
-    f.render_widget(block, chunks[2]);
-
-    if filtered.is_empty() {
-        let msg = if app.image_search.is_empty() {
-            "\n  No images found\n\n  Download with: cave image pull <url>"
-        } else {
-            "\n  No images match your search"
-        };
-        let empty = Paragraph::new(msg).style(Style::default().fg(SUBTEXT));
-        f.render_widget(empty, inner);
-    } else {
-        let rows: Vec<Row> = filtered
-            .iter()
-            .enumerate()
-            .map(|(i, img)| {
-                let is_selected = i == app.selected_image_idx;
-                let style = if is_selected {
-                    Style::default().bg(SURFACE).fg(TEXT)
-                } else {
-                    Style::default().fg(TEXT)
-                };
-                Row::new(vec![
-                    format!(" {}", img.display_name),
-                    format_size(img.size),
-                    img.filename.clone(),
-                ])
-                .style(style)
-            })
-            .collect();
-
-        let header = Row::new(vec!["Name", "Size", "Filename"])
-            .style(Style::default().fg(SUBTEXT).bold());
-
-        let widths = [
-            Constraint::Percentage(40),
-            Constraint::Percentage(15),
-            Constraint::Percentage(45),
-        ];
-        let table = Table::new(rows, widths).header(header);
-        f.render_widget(table, inner);
-    }
-
-    draw_status_bar(f, app, chunks[3]);
-}
-
-fn draw_image_download(f: &mut Frame, app: &App, area: Rect) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),  // Title
-            Constraint::Length(3),  // Search bar
-            Constraint::Min(10),    // Results
-            Constraint::Length(3),  // Status bar
-        ])
-        .split(area);
-
-    let filtered = app.filtered_cloud_images();
-
-    let title = Paragraph::new(Line::from(vec![
-        Span::styled(" 󰇚 ", Style::default().fg(GREEN)),
-        Span::styled("Download Image", Style::default().fg(TEXT).bold()),
-        Span::styled(
-            format!("  {} available", CLOUD_IMAGES.len()),
-            Style::default().fg(SUBTEXT),
-        ),
-    ]))
-    .style(Style::default().bg(SURFACE));
-    f.render_widget(title, chunks[0]);
-
-    // Search bar
-    let search_block = Block::default()
-        .title(Line::from(vec![
-            Span::raw(" "),
-            Span::styled("󰍉 ", Style::default().fg(SAPPHIRE)),
-            Span::styled("Search distros", Style::default().fg(SUBTEXT)),
-            Span::raw(" "),
-        ]))
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(LAVENDER))
-        .style(Style::default().bg(BG));
-
-    let search_inner = search_block.inner(chunks[1]);
-    f.render_widget(search_block, chunks[1]);
-
-    let search_text = if app.cloud_search.is_empty() {
-        Paragraph::new(Line::from(vec![
-            Span::styled(" Type to search (ubuntu, debian, arch, alpine...)", Style::default().fg(SUBTEXT).dim()),
-            Span::styled("▌", Style::default().fg(LAVENDER)),
-        ]))
-    } else {
-        Paragraph::new(Line::from(vec![
-            Span::styled(format!(" {}", app.cloud_search), Style::default().fg(TEXT)),
-            Span::styled("▌", Style::default().fg(LAVENDER)),
-        ]))
-    };
-    f.render_widget(search_text, search_inner);
-
-    // Results list
-    let block = Block::default()
-        .title(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(format!("{} results", filtered.len()), Style::default().fg(SUBTEXT)),
-            Span::raw(" "),
-        ]))
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(OVERLAY))
-        .style(Style::default().bg(BG));
-
-    let inner = block.inner(chunks[2]);
-    f.render_widget(block, chunks[2]);
-
-    if filtered.is_empty() {
-        let empty = Paragraph::new("\n  No images match your search\n\n  Try: ubuntu, debian, fedora, arch, alpine")
-            .style(Style::default().fg(SUBTEXT));
-        f.render_widget(empty, inner);
-    } else {
-        let items: Vec<ListItem> = filtered
-            .iter()
-            .enumerate()
-            .map(|(i, img)| {
-                let is_selected = i == app.cloud_search_idx;
-                let style = if is_selected {
-                    Style::default().bg(LAVENDER).fg(BG)
-                } else {
-                    Style::default().fg(TEXT)
-                };
-
-                ListItem::new(vec![
-                    Line::from(vec![
-                        Span::styled(if is_selected { " ▸ " } else { "   " }, style),
-                        Span::styled(format!("{} {}", img.name, img.version), style.bold()),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("     ", Style::default()),
-                        Span::styled(format!("{} · {} · {}", img.arch, img.format, img.size), Style::default().fg(SUBTEXT)),
-                    ]),
-                ])
-            })
-            .collect();
-
-        let list = List::new(items);
-        f.render_widget(list, inner);
-    }
-
-    draw_status_bar(f, app, chunks[3]);
-}
-
-fn draw_help(f: &mut Frame, area: Rect) {
-    let block = Block::default()
-        .title(" Help ")
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(LAVENDER))
-        .style(Style::default().bg(BG));
+        .border_style(Style::default().fg(SURFACE1))
+        .style(Style::default().bg(BASE));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let help_text = vec![
-        Line::from(""),
-        Line::from(vec![Span::styled("  Dashboard", Style::default().fg(LAVENDER).bold())]),
-        Line::from(""),
+    let Some(node) = app.selected_node() else {
+        let empty = Paragraph::new("Select a node")
+            .style(Style::default().fg(SUBTEXT))
+            .alignment(Alignment::Center);
+        f.render_widget(empty, inner);
+        return;
+    };
+
+    // Split into info area and actions
+    let detail_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(8),      // Node info
+            Constraint::Length(5),   // Actions hint
+        ])
+        .split(inner);
+
+    // Node status (the node itself, not VM)
+    let node_status = if node.status == "active" {
+        Span::styled("Online", Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
+    } else if node.status == "standby" {
+        Span::styled("Standby", Style::default().fg(YELLOW))
+    } else {
+        Span::styled("Offline", Style::default().fg(RED))
+    };
+
+    let ip_display = node.ip.as_deref().unwrap_or("-");
+    let cpu_display = format!("{} ({} cores)", &node.cpu, &node.cores);
+    let total_disk: u64 = node.disks.iter().map(|d| d.size_bytes).sum();
+    let disk_display = format_size(total_disk);
+
+    let mut info_lines = vec![
+        // Node section header
         Line::from(vec![
-            Span::styled("  q        ", Style::default().fg(PEACH)),
-            Span::raw("Quit"),
+            Span::styled("  ── Node ──", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
         ]),
         Line::from(vec![
-            Span::styled("  r        ", Style::default().fg(PEACH)),
-            Span::raw("Refresh node status"),
+            Span::styled("  Name     ", Style::default().fg(SUBTEXT)),
+            Span::styled(&node.hostname, Style::default().fg(TEXT).add_modifier(Modifier::BOLD)),
         ]),
         Line::from(vec![
-            Span::styled("  i        ", Style::default().fg(PEACH)),
-            Span::raw("View images"),
+            Span::styled("  Status   ", Style::default().fg(SUBTEXT)),
+            node_status,
         ]),
         Line::from(vec![
-            Span::styled("  ?        ", Style::default().fg(PEACH)),
-            Span::raw("Toggle help"),
+            Span::styled("  IP       ", Style::default().fg(SUBTEXT)),
+            Span::styled(ip_display, Style::default().fg(TEXT)),
         ]),
         Line::from(vec![
-            Span::styled("  ↑/↓ j/k  ", Style::default().fg(PEACH)),
-            Span::raw("Select node"),
+            Span::styled("  MAC      ", Style::default().fg(SUBTEXT)),
+            Span::styled(&node.mac, Style::default().fg(TEXT)),
         ]),
         Line::from(vec![
-            Span::styled("  Enter    ", Style::default().fg(PEACH)),
-            Span::raw("View node details"),
-        ]),
-        Line::from(""),
-        Line::from(vec![Span::styled("  Node Details", Style::default().fg(LAVENDER).bold())]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  w        ", Style::default().fg(PEACH)),
-            Span::raw("Wake node (WoL)"),
+            Span::styled("  CPU      ", Style::default().fg(SUBTEXT)),
+            Span::styled(&cpu_display, Style::default().fg(TEXT)),
         ]),
         Line::from(vec![
-            Span::styled("  s        ", Style::default().fg(PEACH)),
-            Span::raw("Shutdown node"),
+            Span::styled("  RAM      ", Style::default().fg(SUBTEXT)),
+            Span::styled(&node.ram, Style::default().fg(TEXT)),
         ]),
         Line::from(vec![
-            Span::styled("  d        ", Style::default().fg(PEACH)),
-            Span::raw("Deploy VM"),
-        ]),
-        Line::from(vec![
-            Span::styled("  Esc      ", Style::default().fg(PEACH)),
-            Span::raw("Back to dashboard"),
-        ]),
-        Line::from(""),
-        Line::from(vec![Span::styled("  Images", Style::default().fg(LAVENDER).bold())]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  d        ", Style::default().fg(PEACH)),
-            Span::raw("Download new image"),
-        ]),
-        Line::from(vec![
-            Span::styled("  /        ", Style::default().fg(PEACH)),
-            Span::raw("Focus filter bar"),
-        ]),
-        Line::from(vec![
-            Span::styled("  a-z      ", Style::default().fg(PEACH)),
-            Span::raw("Quick filter (just start typing)"),
-        ]),
-        Line::from(""),
-        Line::from(vec![Span::styled("  Download", Style::default().fg(LAVENDER).bold())]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  a-z      ", Style::default().fg(PEACH)),
-            Span::raw("Search distros (ubuntu, arch...)"),
-        ]),
-        Line::from(vec![
-            Span::styled("  Enter    ", Style::default().fg(PEACH)),
-            Span::raw("Download selected image"),
-        ]),
-        Line::from(vec![
-            Span::styled("  ⌫        ", Style::default().fg(PEACH)),
-            Span::raw("Clear search"),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  Press ", Style::default().fg(SUBTEXT)),
-            Span::styled("Esc", Style::default().fg(LAVENDER)),
-            Span::styled(" or ", Style::default().fg(SUBTEXT)),
-            Span::styled("?", Style::default().fg(LAVENDER)),
-            Span::styled(" to close", Style::default().fg(SUBTEXT)),
+            Span::styled("  Storage  ", Style::default().fg(SUBTEXT)),
+            Span::styled(&disk_display, Style::default().fg(TEXT)),
         ]),
     ];
 
-    let para = Paragraph::new(help_text).style(Style::default().fg(TEXT));
-    f.render_widget(para, inner);
+    // Add VM section if running
+    if let Some(ref vm) = node.vm {
+        info_lines.push(Line::from(""));
+        info_lines.push(Line::from(vec![
+            Span::styled("  ── VM ──", Style::default().fg(MAUVE).add_modifier(Modifier::BOLD)),
+        ]));
+        info_lines.push(Line::from(vec![
+            Span::styled("  Name     ", Style::default().fg(SUBTEXT)),
+            Span::styled(&vm.name, Style::default().fg(TEXT).add_modifier(Modifier::BOLD)),
+        ]));
+        info_lines.push(Line::from(vec![
+            Span::styled("  Status   ", Style::default().fg(SUBTEXT)),
+            Span::styled("Running", Style::default().fg(GREEN)),
+        ]));
+        info_lines.push(Line::from(vec![
+            Span::styled("  IP       ", Style::default().fg(SUBTEXT)),
+            Span::styled(&vm.ip, Style::default().fg(TEXT)),
+        ]));
+        info_lines.push(Line::from(vec![
+            Span::styled("  Memory   ", Style::default().fg(SUBTEXT)),
+            Span::styled(&vm.memory, Style::default().fg(TEXT)),
+        ]));
+        info_lines.push(Line::from(vec![
+            Span::styled("  CPUs     ", Style::default().fg(SUBTEXT)),
+            Span::styled(&vm.cpus, Style::default().fg(TEXT)),
+        ]));
+    } else {
+        info_lines.push(Line::from(""));
+        info_lines.push(Line::from(vec![
+            Span::styled("  ── VM ──", Style::default().fg(SUBTEXT)),
+        ]));
+        info_lines.push(Line::from(vec![
+            Span::styled("  No VM deployed", Style::default().fg(SUBTEXT)),
+        ]));
+    }
+
+    let info_para = Paragraph::new(info_lines);
+    f.render_widget(info_para, detail_chunks[0]);
+
+    // Actions hint
+    let hint = Line::from(vec![
+        Span::styled("Press ", Style::default().fg(SUBTEXT)),
+        Span::styled("Enter", Style::default().fg(BLUE).add_modifier(Modifier::BOLD)),
+        Span::styled(" for actions", Style::default().fg(SUBTEXT)),
+    ]);
+    let actions_para = Paragraph::new(vec![Line::from(""), hint])
+        .alignment(Alignment::Center);
+    f.render_widget(actions_para, detail_chunks[1]);
 }
 
-fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
-    let hints = match app.screen {
-        Screen::Dashboard => vec![
-            ("q", "quit"),
-            ("r", "refresh"),
-            ("i", "images"),
-            ("↑↓", "select"),
-            ("Enter", "details"),
-            ("?", "help"),
-        ],
-        Screen::NodeDetails => vec![
-            ("Esc", "back"),
-            ("w", "wake"),
-            ("s", "shutdown"),
-            ("d", "deploy"),
-            ("↑↓", "select"),
-            ("Enter", "execute"),
-        ],
-        Screen::Images => vec![
-            ("Esc", "back"),
-            ("d", "download"),
-            ("/", "filter"),
-            ("↑↓", "select"),
-        ],
-        Screen::ImageDownload => vec![
-            ("Esc", "back"),
-            ("↑↓", "navigate"),
-            ("Enter", "download"),
-        ],
-        Screen::Help => vec![
-            ("Esc", "close"),
-            ("?", "close"),
-        ],
-    };
+// ============================================================================
+// Status Bar
+// ============================================================================
 
-    let spans: Vec<Span> = hints
+fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
+    let help_text = vec![
+        Span::styled(" [j/k]", Style::default().fg(BLUE)),
+        Span::styled(" navigate  ", Style::default().fg(SUBTEXT)),
+        Span::styled("[Enter]", Style::default().fg(BLUE)),
+        Span::styled(" actions  ", Style::default().fg(SUBTEXT)),
+        Span::styled("[n]", Style::default().fg(BLUE)),
+        Span::styled(" new node  ", Style::default().fg(SUBTEXT)),
+        Span::styled("[i]", Style::default().fg(BLUE)),
+        Span::styled(" images  ", Style::default().fg(SUBTEXT)),
+        Span::styled("[?]", Style::default().fg(BLUE)),
+        Span::styled(" help  ", Style::default().fg(SUBTEXT)),
+        Span::styled("[q]", Style::default().fg(BLUE)),
+        Span::styled(" quit", Style::default().fg(SUBTEXT)),
+    ];
+
+    let mut line = Line::from(help_text);
+
+    // Add status message if present
+    if let Some((msg, _)) = &app.status_message {
+        line = Line::from(vec![
+            Span::styled(format!(" {} ", msg), Style::default().fg(YELLOW).add_modifier(Modifier::BOLD)),
+        ]);
+    }
+
+    let para = Paragraph::new(line)
+        .style(Style::default().bg(SURFACE0));
+    f.render_widget(para, area);
+}
+
+// ============================================================================
+// Overlays
+// ============================================================================
+
+fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    Rect::new(x, y, width.min(area.width), height.min(area.height))
+}
+
+fn draw_node_actions_overlay(f: &mut Frame, app: &App) {
+    let area = centered_rect(40, 12, f.area());
+    f.render_widget(Clear, area);
+
+    let node_name = app.selected_node()
+        .map(|n| n.hostname.as_str())
+        .unwrap_or("Node");
+
+    let block = Block::default()
+        .title(format!(" {} ", node_name))
+        .title_style(Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(LAVENDER))
+        .style(Style::default().bg(BASE));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let items: Vec<ListItem> = NODE_ACTIONS
         .iter()
-        .flat_map(|(key, desc)| {
-            vec![
-                Span::styled(format!(" {} ", key), Style::default().fg(BG).bg(LAVENDER)),
-                Span::styled(format!(" {} ", desc), Style::default().fg(SUBTEXT)),
-                Span::raw("  "),
-            ]
+        .enumerate()
+        .map(|(i, action)| {
+            let style = if i == app.selected_action_idx {
+                Style::default().fg(TEXT).bg(SURFACE0).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(TEXT)
+            };
+            ListItem::new(format!("  {}", action)).style(style)
         })
         .collect();
 
-    let bar = Paragraph::new(Line::from(spans))
-        .style(Style::default().bg(SURFACE));
-
-    f.render_widget(bar, area);
+    let list = List::new(items);
+    f.render_widget(list, inner);
 }
 
-fn draw_status_toast(f: &mut Frame, message: &str) {
-    let area = f.area();
-    let toast_width = message.len() as u16 + 4;
-    let toast_area = Rect {
-        x: area.width.saturating_sub(toast_width + 2),
-        y: 1,
-        width: toast_width,
-        height: 1,
+fn draw_deploy_overlay(f: &mut Frame, app: &App, step: DeployStep) {
+    let area = centered_rect(60, 20, f.area());
+    f.render_widget(Clear, area);
+
+    let title = match step {
+        DeployStep::SelectImage => " Deploy: Select Image ",
+        DeployStep::SelectDisk => " Deploy: Select Disk ",
+        DeployStep::Configure => " Deploy: Configure VM ",
+        DeployStep::Confirm => " Deploy: Confirm ",
+        DeployStep::Deploying => " Deploying... ",
+        DeployStep::Done => " Deploy Complete ",
     };
 
-    let toast = Paragraph::new(format!(" {} ", message))
-        .style(Style::default().fg(BG).bg(YELLOW));
-    f.render_widget(toast, toast_area);
-}
+    let block = Block::default()
+        .title(title)
+        .title_style(Style::default().fg(MAUVE).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(MAUVE))
+        .style(Style::default().bg(BASE));
 
-fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len.saturating_sub(3)])
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    match step {
+        DeployStep::SelectImage => {
+            let images = app.filtered_images();
+
+            let content_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(3),  // Search
+                    Constraint::Min(5),     // List
+                ])
+                .split(inner);
+
+            // Search field
+            let search_text = if app.image_filter.is_empty() {
+                Span::styled("Type to filter...", Style::default().fg(SUBTEXT))
+            } else {
+                Span::styled(&app.image_filter, Style::default().fg(TEXT))
+            };
+            let search = Paragraph::new(Line::from(vec![
+                Span::styled(" Filter: ", Style::default().fg(SUBTEXT)),
+                search_text,
+                Span::styled("_", Style::default().fg(BLUE)),
+            ]));
+            f.render_widget(search, content_chunks[0]);
+
+            // Image list
+            if images.is_empty() {
+                let empty = Paragraph::new("No images found")
+                    .style(Style::default().fg(SUBTEXT))
+                    .alignment(Alignment::Center);
+                f.render_widget(empty, content_chunks[1]);
+            } else {
+                let items: Vec<ListItem> = images
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (name, size))| {
+                        let style = if i == app.deploy_image_idx {
+                            Style::default().fg(TEXT).bg(SURFACE0).add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(TEXT)
+                        };
+                        let display = crate::commands::images::get_image_display_name(name);
+                        ListItem::new(format!("  {} ({})", display, format_size(*size))).style(style)
+                    })
+                    .collect();
+
+                let list = List::new(items);
+                f.render_widget(list, content_chunks[1]);
+            }
+        }
+
+        DeployStep::SelectDisk => {
+            let node = app.selected_node();
+            let disks = node.map(|n| &n.disks).cloned().unwrap_or_default();
+
+            if disks.is_empty() {
+                let empty = Paragraph::new("No disks found on this node")
+                    .style(Style::default().fg(RED))
+                    .alignment(Alignment::Center);
+                f.render_widget(empty, inner);
+            } else {
+                let mut lines = vec![
+                    Line::from(""),
+                    Line::from(Span::styled("Select disk for VM storage:", Style::default().fg(SUBTEXT))),
+                    Line::from(""),
+                ];
+
+                for (i, disk) in disks.iter().enumerate() {
+                    let size_gb = disk.size_bytes / (1024 * 1024 * 1024);
+                    let selected = i == app.deploy_disk_select_idx;
+                    let style = if selected {
+                        Style::default().fg(MAUVE).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(TEXT)
+                    };
+                    let arrow = if selected { " > " } else { "   " };
+                    // Show: /dev/nvme0n1  500 GB  (SSD, Samsung 980 Pro)
+                    let model_info = if disk.model.is_empty() {
+                        disk.disk_type.clone()
+                    } else {
+                        format!("{}, {}", disk.disk_type, disk.model)
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(arrow, Style::default().fg(MAUVE)),
+                        Span::styled(format!("/dev/{}", disk.name), style),
+                        Span::styled(format!("  {} GB", size_gb), Style::default().fg(TEXT)),
+                        Span::styled(format!("  ({})", model_info), Style::default().fg(SUBTEXT)),
+                    ]));
+                }
+
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled("Press Enter to continue", Style::default().fg(SUBTEXT))));
+
+                let para = Paragraph::new(lines).alignment(Alignment::Center);
+                f.render_widget(para, inner);
+            }
+        }
+
+        DeployStep::Configure => {
+            let fields = [
+                ("Memory", MEMORY_OPTIONS[app.deploy_memory_idx].1, app.deploy_config_field == 0),
+                ("CPUs", CPU_OPTIONS[app.deploy_cpu_idx].1, app.deploy_config_field == 1),
+                ("Disk", DISK_OPTIONS[app.deploy_disk_size_idx].1, app.deploy_config_field == 2),
+            ];
+
+            let mut lines = vec![Line::from("")];
+            for (label, value, selected) in fields {
+                let style = if selected {
+                    Style::default().fg(MAUVE).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(TEXT)
+                };
+                let arrow = if selected { " > " } else { "   " };
+                lines.push(Line::from(vec![
+                    Span::styled(arrow, Style::default().fg(MAUVE)),
+                    Span::styled(format!("{:<10}", label), Style::default().fg(SUBTEXT)),
+                    Span::styled(format!(" < {} >", value), style),
+                ]));
+                lines.push(Line::from(""));
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("Use arrow keys to adjust, Enter to continue", Style::default().fg(SUBTEXT))));
+
+            let para = Paragraph::new(lines).alignment(Alignment::Center);
+            f.render_widget(para, inner);
+        }
+
+        DeployStep::Confirm => {
+            let images = app.filtered_images();
+            let image_name = images.get(app.deploy_image_idx)
+                .map(|(n, _)| n.as_str())
+                .unwrap_or("Unknown");
+            let node_name = app.selected_node()
+                .map(|n| n.hostname.as_str())
+                .unwrap_or("Unknown");
+
+            let lines = vec![
+                Line::from(""),
+                Line::from(Span::styled("Deploy VM?", Style::default().fg(TEXT).add_modifier(Modifier::BOLD))),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("  Node:   ", Style::default().fg(SUBTEXT)),
+                    Span::styled(node_name, Style::default().fg(MAUVE)),
+                ]),
+                Line::from(vec![
+                    Span::styled("  Image:  ", Style::default().fg(SUBTEXT)),
+                    Span::styled(image_name, Style::default().fg(BLUE)),
+                ]),
+                Line::from(vec![
+                    Span::styled("  Memory: ", Style::default().fg(SUBTEXT)),
+                    Span::styled(MEMORY_OPTIONS[app.deploy_memory_idx].1, Style::default().fg(TEXT)),
+                ]),
+                Line::from(vec![
+                    Span::styled("  CPUs:   ", Style::default().fg(SUBTEXT)),
+                    Span::styled(CPU_OPTIONS[app.deploy_cpu_idx].1, Style::default().fg(TEXT)),
+                ]),
+                Line::from(vec![
+                    Span::styled("  Disk:   ", Style::default().fg(SUBTEXT)),
+                    Span::styled(DISK_OPTIONS[app.deploy_disk_size_idx].1, Style::default().fg(TEXT)),
+                ]),
+                Line::from(""),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("[y/Enter]", Style::default().fg(GREEN)),
+                    Span::styled(" confirm  ", Style::default().fg(SUBTEXT)),
+                    Span::styled("[n/Esc]", Style::default().fg(RED)),
+                    Span::styled(" cancel", Style::default().fg(SUBTEXT)),
+                ]),
+            ];
+
+            let para = Paragraph::new(lines).alignment(Alignment::Center);
+            f.render_widget(para, inner);
+        }
+
+        DeployStep::Deploying => {
+            let lines = vec![
+                Line::from(""),
+                Line::from(""),
+                Line::from(Span::styled("Deploying...", Style::default().fg(MAUVE).add_modifier(Modifier::BOLD))),
+                Line::from(""),
+                Line::from(Span::styled("Please wait", Style::default().fg(SUBTEXT))),
+            ];
+            let para = Paragraph::new(lines).alignment(Alignment::Center);
+            f.render_widget(para, inner);
+        }
+
+        DeployStep::Done => {
+            let lines = vec![
+                Line::from(""),
+                Line::from(""),
+                Line::from(Span::styled("Done!", Style::default().fg(GREEN).add_modifier(Modifier::BOLD))),
+                Line::from(""),
+                Line::from(Span::styled("Press Enter to continue", Style::default().fg(SUBTEXT))),
+            ];
+            let para = Paragraph::new(lines).alignment(Alignment::Center);
+            f.render_widget(para, inner);
+        }
     }
 }
+
+fn draw_image_download_overlay(f: &mut Frame, app: &App) {
+    let area = centered_rect(70, 20, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Download Cloud Image ")
+        .title_style(Style::default().fg(BLUE).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(BLUE))
+        .style(Style::default().bg(BASE));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let content_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // Search
+            Constraint::Min(5),     // List
+        ])
+        .split(inner);
+
+    // Search field
+    let search_text = if app.cloud_search.is_empty() {
+        Span::styled("Type to search (ubuntu, debian, arch...)", Style::default().fg(SUBTEXT))
+    } else {
+        Span::styled(&app.cloud_search, Style::default().fg(TEXT))
+    };
+    let search = Paragraph::new(Line::from(vec![
+        Span::styled(" Search: ", Style::default().fg(SUBTEXT)),
+        search_text,
+        Span::styled("_", Style::default().fg(BLUE)),
+    ]));
+    f.render_widget(search, content_chunks[0]);
+
+    // Image list
+    let images = app.filtered_cloud_images();
+    let items: Vec<ListItem> = images
+        .iter()
+        .enumerate()
+        .map(|(i, img)| {
+            let style = if i == app.cloud_search_idx {
+                Style::default().fg(TEXT).bg(SURFACE0).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(TEXT)
+            };
+            let line = format!("  {} {} ({}, {})", img.name, img.version, img.arch, img.size);
+            ListItem::new(line).style(style)
+        })
+        .collect();
+
+    let list = List::new(items);
+    f.render_widget(list, content_chunks[1]);
+}
+
+fn draw_node_init_overlay(f: &mut Frame, app: &App) {
+    let area = centered_rect(50, 12, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Add New Node ")
+        .title_style(Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(GREEN))
+        .style(Style::default().bg(BASE));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let hostname_style = if app.node_init_field == 0 {
+        Style::default().fg(TEXT).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(SUBTEXT)
+    };
+    let mac_style = if app.node_init_field == 1 {
+        Style::default().fg(TEXT).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(SUBTEXT)
+    };
+
+    let cursor = Span::styled("_", Style::default().fg(BLUE));
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Hostname: ", Style::default().fg(SUBTEXT)),
+            Span::styled(&app.node_init_hostname, hostname_style),
+            if app.node_init_field == 0 { cursor.clone() } else { Span::raw("") },
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  MAC:      ", Style::default().fg(SUBTEXT)),
+            Span::styled(&app.node_init_mac, mac_style),
+            if app.node_init_field == 1 { cursor } else { Span::raw("") },
+        ]),
+        Line::from(""),
+        Line::from(""),
+        Line::from(Span::styled("Tab to switch fields, Enter to add", Style::default().fg(SUBTEXT))),
+    ];
+
+    let para = Paragraph::new(lines);
+    f.render_widget(para, inner);
+}
+
+fn draw_help_overlay(f: &mut Frame) {
+    let area = centered_rect(50, 18, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Help ")
+        .title_style(Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(LAVENDER))
+        .style(Style::default().bg(BASE));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(" Navigation", Style::default().fg(MAUVE).add_modifier(Modifier::BOLD))),
+        Line::from(vec![Span::styled("  j/k or arrows  ", Style::default().fg(BLUE)), Span::styled("Move up/down", Style::default().fg(TEXT))]),
+        Line::from(""),
+        Line::from(Span::styled(" Node Actions", Style::default().fg(MAUVE).add_modifier(Modifier::BOLD))),
+        Line::from(vec![Span::styled("  d / Enter      ", Style::default().fg(BLUE)), Span::styled("Deploy VM", Style::default().fg(TEXT))]),
+        Line::from(vec![Span::styled("  x              ", Style::default().fg(BLUE)), Span::styled("Destroy VM", Style::default().fg(TEXT))]),
+        Line::from(vec![Span::styled("  w              ", Style::default().fg(BLUE)), Span::styled("Wake (WoL)", Style::default().fg(TEXT))]),
+        Line::from(vec![Span::styled("  s              ", Style::default().fg(BLUE)), Span::styled("Shutdown", Style::default().fg(TEXT))]),
+        Line::from(vec![Span::styled("  r              ", Style::default().fg(BLUE)), Span::styled("Restart", Style::default().fg(TEXT))]),
+        Line::from(""),
+        Line::from(Span::styled(" General", Style::default().fg(MAUVE).add_modifier(Modifier::BOLD))),
+        Line::from(vec![Span::styled("  n              ", Style::default().fg(BLUE)), Span::styled("Add new node", Style::default().fg(TEXT))]),
+        Line::from(vec![Span::styled("  i              ", Style::default().fg(BLUE)), Span::styled("Download images", Style::default().fg(TEXT))]),
+        Line::from(vec![Span::styled("  R              ", Style::default().fg(BLUE)), Span::styled("Refresh", Style::default().fg(TEXT))]),
+        Line::from(vec![Span::styled("  q              ", Style::default().fg(BLUE)), Span::styled("Quit", Style::default().fg(TEXT))]),
+    ];
+
+    let para = Paragraph::new(lines);
+    f.render_widget(para, inner);
+}
+
+// ============================================================================
+// Server Panel
+// ============================================================================
+
+fn draw_server_panel(f: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .title(" Server ")
+        .title_style(Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(SURFACE1))
+        .style(Style::default().bg(BASE));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // Calculate time since last refresh
+    let elapsed = app.last_refresh.elapsed().as_secs();
+    let refresh_text = if elapsed < 60 {
+        format!("{}s ago", elapsed)
+    } else {
+        format!("{}m ago", elapsed / 60)
+    };
+
+    let pxe_status = if app.pxe_running {
+        Span::styled("Running", Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
+    } else {
+        Span::styled("Stopped", Style::default().fg(RED).add_modifier(Modifier::BOLD))
+    };
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled("── PXE Server ──", Style::default().fg(MAUVE))),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(" Status  ", Style::default().fg(SUBTEXT)),
+            pxe_status,
+        ]),
+        Line::from(vec![
+            Span::styled(" Port    ", Style::default().fg(SUBTEXT)),
+            Span::styled(format!("{}", app.http_port), Style::default().fg(TEXT)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("── Poller ──", Style::default().fg(MAUVE))),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(" Last    ", Style::default().fg(SUBTEXT)),
+            Span::styled(&refresh_text, Style::default().fg(TEXT)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("── Paths ──", Style::default().fg(MAUVE))),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(" ~/cave", Style::default().fg(SUBTEXT)),
+        ]),
+    ];
+
+    let para = Paragraph::new(lines);
+    f.render_widget(para, inner);
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
 
 fn format_size(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = KB * 1024;
     const GB: u64 = MB * 1024;
-
-    if bytes >= GB {
-        format!("{:.1} GB", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        format!("{:.0} MB", bytes as f64 / MB as f64)
-    } else {
-        format!("{:.0} KB", bytes as f64 / KB as f64)
-    }
-}
-
-fn format_bytes(bytes: u64) -> String {
-    const GB: u64 = 1_000_000_000;
-    const TB: u64 = 1_000_000_000_000;
+    const TB: u64 = GB * 1024;
 
     if bytes >= TB {
-        format!("{:.1}T", bytes as f64 / TB as f64)
+        format!("{:.1} TB", bytes as f64 / TB as f64)
+    } else if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
     } else {
-        format!("{}G", bytes / GB)
+        format!("{} B", bytes)
     }
 }
