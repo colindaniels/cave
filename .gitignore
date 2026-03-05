@@ -1,2 +1,6 @@
 /target
 /images
+/alpine
+/vms
+*.log
+*.pid
