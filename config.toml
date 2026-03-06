@@ -10,3 +10,27 @@ mac = "7c:83:34:bb:91:e2"
 [[nodes]]
 hostname = "mercury2"
 mac = "7c:83:34:bb:93:a9"
+
+[[nodes]]
+hostname = "mercury3"
+mac = "7c:83:34:bb:8e:f3"
+
+[[nodes]]
+hostname = "mercury4"
+mac = "7c:83:34:bb:8e:ec"
+
+[[nodes]]
+hostname = "mercury5"
+mac = "7c:83:34:bb:93:a6"
+
+[[nodes]]
+hostname = "mercury6"
+mac = "7c:83:34:bb:93:a7"
+
+[[nodes]]
+hostname = "mercury7"
+mac = "7c:83:34:bb:8f:3e"
+
+[[nodes]]
+hostname = "mercury8"
+mac = "7c:83:34:bb:93:82"

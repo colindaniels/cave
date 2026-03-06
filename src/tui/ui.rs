@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use super::app::{
-    App, DeployStep, Overlay, CPU_OPTIONS, DISK_OPTIONS, MEMORY_OPTIONS, NODE_ACTIONS,
+    App, DeployStep, Overlay, CPU_OPTIONS, MEMORY_OPTIONS, NODE_ACTIONS,
 };
 use super::widgets::logo::LOGO;
 use crate::commands::images::CLOUD_IMAGES;
@@ -311,19 +311,28 @@ fn draw_node_details(f: &mut Frame, app: &App, area: Rect) {
         ])
         .split(inner);
 
-    // Node status (the node itself, not VM)
-    let node_status = if node.status == "active" {
-        Span::styled("Online", Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
+    // Node status (the node itself, not VM) - colored circle + plain text
+    let (node_status_color, node_status_text) = if node.status == "active" {
+        (GREEN, "Online")
     } else if node.status == "standby" {
-        Span::styled("Standby", Style::default().fg(YELLOW))
+        (YELLOW, "Standby")
     } else {
-        Span::styled("Offline", Style::default().fg(RED))
+        (RED, "Offline")
     };
 
     let ip_display = node.ip.as_deref().unwrap_or("-");
     let cpu_display = format!("{} ({} cores)", &node.cpu, &node.cores);
     let total_disk: u64 = node.disks.iter().map(|d| d.size_bytes).sum();
     let disk_display = format_size(total_disk);
+
+    // RAM display: show usage if available, otherwise just total
+    let (ram_display, ram_color) = match (node.ram_used_mb, node.ram_total_mb) {
+        (Some(used), Some(total)) => {
+            let (display, percent) = format_ram_usage(used, total);
+            (display, usage_color(percent))
+        }
+        _ => (node.ram.clone(), TEXT), // Fallback to the raw string like "7.5G"
+    };
 
     let mut info_lines = vec![
         // Node section header
@@ -336,7 +345,8 @@ fn draw_node_details(f: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  Status   ", Style::default().fg(SUBTEXT)),
-            node_status,
+            Span::styled("● ", Style::default().fg(node_status_color)),
+            Span::styled(node_status_text, Style::default().fg(TEXT)),
         ]),
         Line::from(vec![
             Span::styled("  IP       ", Style::default().fg(SUBTEXT)),
@@ -352,7 +362,7 @@ fn draw_node_details(f: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  RAM      ", Style::default().fg(SUBTEXT)),
-            Span::styled(&node.ram, Style::default().fg(TEXT)),
+            Span::styled(&ram_display, Style::default().fg(ram_color)),
         ]),
         Line::from(vec![
             Span::styled("  Storage  ", Style::default().fg(SUBTEXT)),
@@ -370,17 +380,28 @@ fn draw_node_details(f: &mut Frame, app: &App, area: Rect) {
             Span::styled("  Name     ", Style::default().fg(SUBTEXT)),
             Span::styled(&vm.name, Style::default().fg(TEXT).add_modifier(Modifier::BOLD)),
         ]));
+        // VM status - if we have VM info, it's online/running
+        let (vm_status_color, vm_status_text) = if vm.ip.is_empty() {
+            (YELLOW, "Starting")
+        } else {
+            (GREEN, "Online")
+        };
         info_lines.push(Line::from(vec![
             Span::styled("  Status   ", Style::default().fg(SUBTEXT)),
-            Span::styled("Running", Style::default().fg(GREEN)),
+            Span::styled("● ", Style::default().fg(vm_status_color)),
+            Span::styled(vm_status_text, Style::default().fg(TEXT)),
         ]));
         info_lines.push(Line::from(vec![
             Span::styled("  IP       ", Style::default().fg(SUBTEXT)),
             Span::styled(&vm.ip, Style::default().fg(TEXT)),
         ]));
+
+        // VM Memory display: show usage if available
+        let (vm_mem_display, vm_mem_percent) = format_vm_memory_usage(vm);
+        let vm_mem_color = vm_mem_percent.map(usage_color).unwrap_or(TEXT);
         info_lines.push(Line::from(vec![
             Span::styled("  Memory   ", Style::default().fg(SUBTEXT)),
-            Span::styled(&vm.memory, Style::default().fg(TEXT)),
+            Span::styled(vm_mem_display, Style::default().fg(vm_mem_color)),
         ]));
         info_lines.push(Line::from(vec![
             Span::styled("  CPUs     ", Style::default().fg(SUBTEXT)),
@@ -582,7 +603,7 @@ fn draw_deploy_overlay(f: &mut Frame, app: &App, step: DeployStep) {
                 ];
 
                 for (i, disk) in disks.iter().enumerate() {
-                    let size_gb = disk.size_bytes / (1024 * 1024 * 1024);
+                    let size_display = format_size(disk.size_bytes);
                     let selected = i == app.deploy_disk_select_idx;
                     let style = if selected {
                         Style::default().fg(MAUVE).add_modifier(Modifier::BOLD)
@@ -599,7 +620,7 @@ fn draw_deploy_overlay(f: &mut Frame, app: &App, step: DeployStep) {
                     lines.push(Line::from(vec![
                         Span::styled(arrow, Style::default().fg(MAUVE)),
                         Span::styled(format!("/dev/{}", disk.name), style),
-                        Span::styled(format!("  {} GB", size_gb), Style::default().fg(TEXT)),
+                        Span::styled(format!("  {}", size_display), Style::default().fg(TEXT)),
                         Span::styled(format!("  ({})", model_info), Style::default().fg(SUBTEXT)),
                     ]));
                 }
@@ -613,10 +634,11 @@ fn draw_deploy_overlay(f: &mut Frame, app: &App, step: DeployStep) {
         }
 
         DeployStep::Configure => {
-            let fields = [
+            let disk_label = app.selected_disk_size_label();
+            let fields: [(&str, &str, bool); 3] = [
                 ("Memory", MEMORY_OPTIONS[app.deploy_memory_idx].1, app.deploy_config_field == 0),
                 ("CPUs", CPU_OPTIONS[app.deploy_cpu_idx].1, app.deploy_config_field == 1),
-                ("Disk", DISK_OPTIONS[app.deploy_disk_size_idx].1, app.deploy_config_field == 2),
+                ("Disk", &disk_label, app.deploy_config_field == 2),
             ];
 
             let mut lines = vec![Line::from("")];
@@ -649,6 +671,7 @@ fn draw_deploy_overlay(f: &mut Frame, app: &App, step: DeployStep) {
             let node_name = app.selected_node()
                 .map(|n| n.hostname.as_str())
                 .unwrap_or("Unknown");
+            let disk_label = app.selected_disk_size_label();
 
             let lines = vec![
                 Line::from(""),
@@ -672,7 +695,7 @@ fn draw_deploy_overlay(f: &mut Frame, app: &App, step: DeployStep) {
                 ]),
                 Line::from(vec![
                     Span::styled("  Disk:   ", Style::default().fg(SUBTEXT)),
-                    Span::styled(DISK_OPTIONS[app.deploy_disk_size_idx].1, Style::default().fg(TEXT)),
+                    Span::styled(disk_label, Style::default().fg(TEXT)),
                 ]),
                 Line::from(""),
                 Line::from(""),
@@ -963,20 +986,115 @@ fn draw_server_panel(f: &mut Frame, app: &App, area: Rect) {
 // ============================================================================
 
 fn format_size(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = KB * 1024;
-    const GB: u64 = MB * 1024;
-    const TB: u64 = GB * 1024;
+    // Use decimal units (like disk manufacturers) to match CLI output
+    const GB: u64 = 1_000_000_000;
+    const TB: u64 = 1_000_000_000_000;
 
     if bytes >= TB {
-        format!("{:.1} TB", bytes as f64 / TB as f64)
+        let tb = bytes as f64 / TB as f64;
+        if (tb - tb.round()).abs() < 0.05 {
+            format!("{} TB", tb.round() as u64)
+        } else {
+            format!("{:.1} TB", tb)
+        }
     } else if bytes >= GB {
-        format!("{:.1} GB", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        format!("{:.1} MB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.1} KB", bytes as f64 / KB as f64)
+        format!("{} GB", bytes / GB)
     } else {
-        format!("{} B", bytes)
+        format!("{} MB", bytes / 1_000_000)
+    }
+}
+
+/// Format RAM usage as "X.X% (Y GB / Z GB)" (used / total)
+/// Returns (formatted_string, percentage) for color coding
+fn format_ram_usage(used_mb: u64, total_mb: u64) -> (String, f64) {
+    // Round total to nearest physical RAM size (OS reports less than physical)
+    let physical_mb = round_to_physical_ram(total_mb);
+    let physical_gb = physical_mb / 1024;
+
+    // Add BIOS-reserved RAM to usage (physical - OS visible)
+    let bios_reserved = physical_mb.saturating_sub(total_mb);
+    let actual_used_mb = used_mb + bios_reserved;
+
+    let used_gb = actual_used_mb as f64 / 1024.0;
+    let percent = if physical_mb > 0 {
+        actual_used_mb as f64 / physical_mb as f64 * 100.0
+    } else {
+        0.0
+    };
+
+    (format!("{:.1}% ({:.1} GB / {} GB)", percent, used_gb, physical_gb), percent)
+}
+
+/// Get color based on usage percentage
+fn usage_color(percent: f64) -> Color {
+    if percent < 50.0 {
+        GREEN
+    } else if percent < 80.0 {
+        YELLOW
+    } else {
+        RED
+    }
+}
+
+/// Round OS-reported RAM to actual physical RAM size
+fn round_to_physical_ram(reported_mb: u64) -> u64 {
+    // Common physical RAM sizes in MB
+    const SIZES: &[u64] = &[
+        2 * 1024,   // 2 GB
+        4 * 1024,   // 4 GB
+        8 * 1024,   // 8 GB
+        16 * 1024,  // 16 GB
+        32 * 1024,  // 32 GB
+        64 * 1024,  // 64 GB
+        128 * 1024, // 128 GB
+        256 * 1024, // 256 GB
+    ];
+
+    // Find the smallest physical size >= reported (with ~5% tolerance for OS overhead)
+    for &size in SIZES {
+        if reported_mb <= size && reported_mb as f64 >= size as f64 * 0.90 {
+            return size;
+        }
+    }
+
+    // If no match, round up to nearest GB
+    ((reported_mb + 1023) / 1024) * 1024
+}
+
+/// Format VM memory usage as "X.X% (Y GB / Z GB)" (used / allocated)
+/// Returns (formatted_string, Option<percentage>) for color coding
+fn format_vm_memory_usage(vm: &crate::config::CachedVm) -> (String, Option<f64>) {
+    // Parse allocated memory from string like "2048M" or "4096M"
+    let allocated_mb: u64 = vm.memory
+        .trim_end_matches('M')
+        .parse()
+        .unwrap_or(0);
+
+    if let Some(used_mb) = vm.memory_used_mb {
+        let used_gb = used_mb as f64 / 1024.0;
+        let allocated_gb = allocated_mb as f64 / 1024.0;
+        let percent = if allocated_mb > 0 {
+            used_mb as f64 / allocated_mb as f64 * 100.0
+        } else {
+            0.0
+        };
+
+        // Format allocated as integer if it's a whole number
+        let alloc_str = if allocated_gb == allocated_gb.floor() {
+            format!("{}", allocated_gb as u64)
+        } else {
+            format!("{:.1}", allocated_gb)
+        };
+
+        (format!("{:.1}% ({:.1} GB / {} GB)", percent, used_gb, alloc_str), Some(percent))
+    } else {
+        // No usage data, just show allocated
+        let allocated_gb = allocated_mb as f64 / 1024.0;
+        let display = if allocated_gb == allocated_gb.floor() {
+            format!("{} GB", allocated_gb as u64)
+        } else {
+            format!("{:.1} GB", allocated_gb)
+        };
+        (display, None)
     }
 }

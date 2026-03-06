@@ -65,8 +65,14 @@ pub const DISK_OPTIONS: &[(u64, &str)] = &[
     (20, "20 GB"),
     (50, "50 GB"),
     (100, "100 GB"),
+    (128, "128 GB"),
     (200, "200 GB"),
+    (250, "250 GB"),
     (500, "500 GB"),
+    (512, "512 GB"),
+    (1000, "1 TB"),
+    (2000, "2 TB"),
+    (4000, "4 TB"),
 ];
 
 pub const NODE_ACTIONS: &[&str] = &[
@@ -121,6 +127,7 @@ pub struct App {
     pub node_init_hostname: String,
     pub node_init_mac: String,
     pub node_init_field: usize, // 0=hostname, 1=mac
+    pub node_init_pending: bool, // True when adding node (show loading)
 
     // Node action menu
     pub selected_action_idx: usize,
@@ -132,6 +139,9 @@ pub struct App {
     // Server status
     pub pxe_running: bool,
     pub http_port: u16,
+
+    // Continuous polling
+    pub poll_handle: Option<std::process::Child>,
 }
 
 impl App {
@@ -168,12 +178,57 @@ impl App {
             node_init_hostname: String::new(),
             node_init_mac: String::new(),
             node_init_field: 0,
+            node_init_pending: false,
             selected_action_idx: 0,
             status_message: None,
             last_refresh: Instant::now(),
             pxe_running,
             http_port,
+            poll_handle: None,
         }
+    }
+
+    /// Start a poll if one isn't already running
+    pub fn start_poll_if_idle(&mut self) {
+        // Check if previous poll finished
+        if let Some(ref mut handle) = self.poll_handle {
+            match handle.try_wait() {
+                Ok(Some(_)) => {
+                    // Poll finished, clear handle
+                    self.poll_handle = None;
+                }
+                Ok(None) => {
+                    // Still running, don't start another
+                    return;
+                }
+                Err(_) => {
+                    // Error checking, clear and restart
+                    self.poll_handle = None;
+                }
+            }
+        }
+
+        // Start new poll
+        if let Ok(child) = Command::new("cave").args(["poll"]).spawn() {
+            self.poll_handle = Some(child);
+        }
+    }
+
+    /// Check if poll completed and refresh data
+    pub fn check_poll_complete(&mut self) -> bool {
+        if let Some(ref mut handle) = self.poll_handle {
+            match handle.try_wait() {
+                Ok(Some(_)) => {
+                    // Poll finished, refresh data
+                    self.poll_handle = None;
+                    self.refresh_data();
+                    self.last_refresh = Instant::now();
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        false
     }
 
     fn check_server_status() -> (bool, u16) {
@@ -459,26 +514,46 @@ impl App {
             .unwrap_or(0)
     }
 
-    // Get max disk size index based on selected disk
-    pub fn max_disk_size_idx(&self) -> usize {
-        let Some(node) = self.selected_node() else {
-            return DISK_OPTIONS.len() - 1;
-        };
+    // Get disk size options for the selected disk (includes max capacity)
+    pub fn get_disk_options(&self) -> Vec<(u64, String)> {
+        let max_gb = self.selected_node()
+            .and_then(|n| n.disks.get(self.deploy_disk_select_idx))
+            .map(|d| d.size_bytes / 1_000_000_000)
+            .unwrap_or(500);
 
-        let disk = node.disks.get(self.deploy_disk_select_idx);
-        let disk_gb = disk.map(|d| d.size_bytes / (1024 * 1024 * 1024)).unwrap_or(0);
+        let mut options: Vec<(u64, String)> = DISK_OPTIONS
+            .iter()
+            .filter(|(gb, _)| *gb <= max_gb)
+            .map(|(gb, label)| (*gb, label.to_string()))
+            .collect();
 
-        DISK_OPTIONS.iter()
-            .rposition(|(gb, _)| *gb <= disk_gb)
-            .unwrap_or(0)
+        // Add max capacity if not already in list
+        if !options.iter().any(|(gb, _)| *gb == max_gb) && max_gb > 0 {
+            options.push((max_gb, format!("{} GB (max)", max_gb)));
+        }
+
+        options
     }
 
-    // Get selected disk info
-    pub fn selected_disk_info(&self) -> Option<(usize, u64, &str)> {
-        let node = self.selected_node()?;
-        let disk = node.disks.get(self.deploy_disk_select_idx)?;
-        let gb = disk.size_bytes / (1024 * 1024 * 1024);
-        Some((self.deploy_disk_select_idx, gb, &disk.disk_type))
+    // Get max disk size index based on selected disk
+    pub fn max_disk_size_idx(&self) -> usize {
+        self.get_disk_options().len().saturating_sub(1)
+    }
+
+    // Get the actual disk size value at current index
+    pub fn selected_disk_size_gb(&self) -> u64 {
+        let options = self.get_disk_options();
+        options.get(self.deploy_disk_size_idx)
+            .map(|(gb, _)| *gb)
+            .unwrap_or(50)
+    }
+
+    // Get disk size label at current index
+    pub fn selected_disk_size_label(&self) -> String {
+        let options = self.get_disk_options();
+        options.get(self.deploy_disk_size_idx)
+            .map(|(_, label)| label.clone())
+            .unwrap_or_else(|| "50 GB".to_string())
     }
 
     // ========================================================================
@@ -779,8 +854,9 @@ impl App {
             }
             KeyCode::Enter => {
                 if !self.node_init_hostname.is_empty() && !self.node_init_mac.is_empty() {
-                    self.execute_node_init();
-                    self.overlay = Overlay::None;
+                    // Show loading overlay, execute on next tick
+                    self.node_init_pending = true;
+                    self.overlay = Overlay::ActionProgress("Adding node...".to_string());
                 }
             }
             KeyCode::Backspace => {
@@ -913,7 +989,7 @@ impl App {
 
         let memory = MEMORY_OPTIONS[self.deploy_memory_idx].0;
         let cpus = CPU_OPTIONS[self.deploy_cpu_idx].0;
-        let disk = DISK_OPTIONS[self.deploy_disk_size_idx].0;
+        let disk = self.selected_disk_size_gb();
 
         // Run deploy command
         let result = Command::new("cave")
@@ -956,29 +1032,47 @@ impl App {
     }
 
     fn execute_node_init(&mut self) {
+        let hostname = self.node_init_hostname.clone();
+        let mac = self.node_init_mac.clone();
+
         let result = Command::new("cave")
             .args([
                 "node", "init",
-                &self.node_init_hostname,
-                &self.node_init_mac,
+                &hostname,
+                &mac,
             ])
             .output();
 
         match result {
             Ok(output) => {
                 if output.status.success() {
-                    self.set_status(&format!("Added node: {}", self.node_init_hostname));
-                    // Run poll to update cache with new node
-                    let _ = Command::new("cave").args(["poll"]).output();
+                    // Add node to list immediately (no need to wait for poll)
+                    self.nodes.push(CachedNode {
+                        hostname: hostname.clone(),
+                        mac,
+                        ip: None,
+                        status: "offline".to_string(),
+                        cpu: String::new(),
+                        cores: String::new(),
+                        ram: String::new(),
+                        ram_total_mb: None,
+                        ram_used_mb: None,
+                        disks: vec![],
+                        vm: None,
+                    });
+                    self.set_status(&format!("Added node: {}", hostname));
+                    self.overlay = Overlay::None;
                 } else {
                     let err = String::from_utf8_lossy(&output.stderr);
                     self.set_status(&format!("Failed: {}", err.trim()));
+                    self.overlay = Overlay::None;
                 }
             }
-            Err(e) => self.set_status(&format!("Error: {}", e)),
+            Err(e) => {
+                self.set_status(&format!("Error: {}", e));
+                self.overlay = Overlay::None;
+            }
         }
-
-        self.refresh_data();
     }
 
     fn download_image(&mut self, url: &str) {
@@ -1008,8 +1102,8 @@ pub fn run() -> Result<()> {
     let tick_rate = Duration::from_millis(100);
     let mut last_tick = Instant::now();
 
-    // Auto-refresh (poll) every 10 seconds
-    let refresh_interval = Duration::from_secs(10);
+    // Start initial poll immediately
+    app.start_poll_if_idle();
 
     loop {
         terminal.draw(|f| ui::draw(f, &app))?;
@@ -1029,6 +1123,14 @@ pub fn run() -> Result<()> {
                 app.overlay = Overlay::None;
             }
             continue; // Redraw immediately after action
+        }
+
+        // Check for pending node init (runs after UI draws progress)
+        if app.node_init_pending {
+            app.node_init_pending = false;
+            app.execute_node_init();
+            // Don't clear overlay - execute_node_init sets its own overlay for waiting
+            continue; // Redraw immediately after init
         }
 
         let timeout = tick_rate
@@ -1064,11 +1166,13 @@ pub fn run() -> Result<()> {
             }
         }
 
-        // Auto-refresh (run poll in background)
-        if app.last_refresh.elapsed() >= refresh_interval {
-            // Run poll in background to update cache
-            let _ = Command::new("cave").args(["poll"]).spawn();
-            app.refresh_data();
+        // Continuous polling - check if poll finished, start new one if idle
+        if app.check_poll_complete() {
+            // Poll just finished and data refreshed, start another
+            app.start_poll_if_idle();
+        } else {
+            // Start poll if none running
+            app.start_poll_if_idle();
         }
 
         if !app.running {

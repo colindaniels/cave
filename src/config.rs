@@ -133,6 +133,8 @@ pub struct CachedNode {
     pub cpu: String,
     pub cores: String,
     pub ram: String,
+    pub ram_total_mb: Option<u64>,  // Total RAM in MB
+    pub ram_used_mb: Option<u64>,   // Used RAM in MB (by QEMU/VMs)
     pub disks: Vec<CachedDisk>,
     pub vm: Option<CachedVm>,
 }
@@ -149,7 +151,8 @@ pub struct CachedDisk {
 pub struct CachedVm {
     pub name: String,
     pub ip: String,
-    pub memory: String,
+    pub memory: String,        // Allocated memory (e.g., "2048M")
+    pub memory_used_mb: Option<u64>,  // Actual usage inside VM
     pub cpus: String,
 }
 

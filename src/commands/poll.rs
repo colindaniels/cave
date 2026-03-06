@@ -43,7 +43,15 @@ pub async fn run() -> Result<()> {
                     None
                 };
 
-                // Get VM info if active
+                // Get RAM usage for any online node, VM info only if active
+                let (ram_total_mb, ram_used_mb) = if info.status != NodeStatus::Offline {
+                    verified_ip.as_ref()
+                        .map(|ip| get_host_ram_usage(ip))
+                        .unwrap_or((None, None))
+                } else {
+                    (None, None)
+                };
+
                 let vm_info = if info.status == NodeStatus::Active {
                     verified_ip.as_ref().and_then(|ip| get_vm_info(ip))
                 } else {
@@ -58,6 +66,8 @@ pub async fn run() -> Result<()> {
                     cpu: info.specs.cpu,
                     cores: info.specs.cores,
                     ram: info.specs.ram,
+                    ram_total_mb,
+                    ram_used_mb,
                     disks: info.specs.disks.iter().map(|d| CachedDisk {
                         name: d.name.clone(),
                         size_bytes: d.size_bytes,
@@ -90,6 +100,28 @@ pub async fn run() -> Result<()> {
     Ok(())
 }
 
+/// Get host RAM usage (total, used) in MB
+fn get_host_ram_usage(host_ip: &str) -> (Option<u64>, Option<u64>) {
+    let Ok(ssh) = SshConnection::connect(host_ip) else {
+        return (None, None);
+    };
+
+    // Get total and used RAM from host
+    // free -m output: "Mem: total used free shared buff/cache available"
+    let Ok(output) = ssh.execute("free -m | awk '/Mem:/ {print $2\"|\"$3}'") else {
+        return (None, None);
+    };
+
+    let parts: Vec<&str> = output.trim().split('|').collect();
+    if parts.len() >= 2 {
+        let total = parts[0].parse::<u64>().ok();
+        let used = parts[1].parse::<u64>().ok();
+        (total, used)
+    } else {
+        (None, None)
+    }
+}
+
 fn get_vm_info(host_ip: &str) -> Option<CachedVm> {
     let ssh = SshConnection::connect(host_ip).ok()?;
 
@@ -101,7 +133,7 @@ fn get_vm_info(host_ip: &str) -> Option<CachedVm> {
                 qemu_args=$(cat /proc/$(cat "$pid")/cmdline 2>/dev/null | tr '\0' ' ')
                 mac=$(echo "$qemu_args" | grep -o 'mac=[^, ]*' | cut -d= -f2)
                 which arp-scan >/dev/null 2>&1 || apk add --no-cache arp-scan >/dev/null 2>&1
-                ip=$(arp-scan -I br0 -l 2>/dev/null | grep -i "$mac" | awk '{{print $1}}')
+                ip=$(arp-scan -I br0 -l 2>/dev/null | grep -i "$mac" | awk '{{print $1}}' | head -1)
                 mem=$(echo "$qemu_args" | sed -n 's/.*-m \([0-9]*\).*/\1/p')
                 cpus=$(echo "$qemu_args" | sed -n 's/.*-smp \([0-9]*\).*/\1/p')
                 echo "$vm|$ip|$mem|$cpus"
@@ -114,13 +146,32 @@ fn get_vm_info(host_ip: &str) -> Option<CachedVm> {
 
     let parts: Vec<&str> = output.trim().split('|').collect();
     if parts.len() >= 4 && !parts[0].is_empty() {
+        let vm_ip = parts[1].to_string();
+        let allocated_mem = parts[2].to_string();
+
+        // Get VM's actual memory usage if we have its IP
+        let memory_used_mb = if !vm_ip.is_empty() {
+            get_vm_memory_usage(&vm_ip)
+        } else {
+            None
+        };
+
         Some(CachedVm {
             name: parts[0].to_string(),
-            ip: parts[1].to_string(),
-            memory: format!("{}M", parts[2]),
+            ip: vm_ip,
+            memory: format!("{}M", allocated_mem),
+            memory_used_mb,
             cpus: parts[3].to_string(),
         })
     } else {
         None
     }
+}
+
+/// Get VM's actual memory usage by SSHing into the VM
+fn get_vm_memory_usage(vm_ip: &str) -> Option<u64> {
+    // Try to SSH into the VM (may fail if VM not ready or no SSH)
+    let ssh = SshConnection::connect(vm_ip).ok()?;
+    let output = ssh.execute("free -m | awk '/Mem:/ {print $3}'").ok()?;
+    output.trim().parse::<u64>().ok()
 }
