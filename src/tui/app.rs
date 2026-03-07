@@ -10,7 +10,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use crate::commands::images::{CloudImage, CLOUD_IMAGES};
-use crate::config::{load_node_cache, CachedNode, Config};
+use crate::config::{load_node_cache, save_node_cache, CachedNode, Config};
 
 use super::ui;
 
@@ -135,6 +135,7 @@ pub struct App {
     // Status/feedback
     pub status_message: Option<(String, Instant)>,
     pub last_refresh: Instant,
+    pub nodes_frozen_until: Option<Instant>,  // Don't refresh nodes until this time
 
     // Server status
     pub pxe_running: bool,
@@ -142,6 +143,12 @@ pub struct App {
 
     // Continuous polling
     pub poll_handle: Option<std::process::Child>,
+
+    // Image download tracking
+    pub image_download_handle: Option<std::process::Child>,
+    pub image_download_name: Option<String>,
+    pub image_download_start: Option<Instant>,
+    pub image_download_total_bytes: Option<u64>,
 }
 
 impl App {
@@ -182,9 +189,14 @@ impl App {
             selected_action_idx: 0,
             status_message: None,
             last_refresh: Instant::now(),
+            nodes_frozen_until: None,
             pxe_running,
             http_port,
             poll_handle: None,
+            image_download_handle: None,
+            image_download_name: None,
+            image_download_start: None,
+            image_download_total_bytes: None,
         }
     }
 
@@ -293,7 +305,15 @@ impl App {
     }
 
     pub fn refresh_data(&mut self) {
-        self.nodes = load_node_cache();
+        // Skip refreshing nodes if frozen (recently added/removed a node)
+        let nodes_frozen = self.nodes_frozen_until
+            .map(|until| Instant::now() < until)
+            .unwrap_or(false);
+
+        if !nodes_frozen {
+            self.nodes = load_node_cache();
+        }
+
         self.local_images = Self::load_local_images();
         let (pxe_running, http_port) = Self::check_server_status();
         self.pxe_running = pxe_running;
@@ -467,6 +487,53 @@ impl App {
         }
 
         false
+    }
+
+    /// Check if image download completed. Returns true if done.
+    pub fn check_download_complete(&mut self) -> bool {
+        if let Some(ref mut handle) = self.image_download_handle {
+            match handle.try_wait() {
+                Ok(Some(status)) => {
+                    let name = self.image_download_name.take().unwrap_or_default();
+                    self.image_download_handle = None;
+                    self.image_download_start = None;
+                    self.image_download_total_bytes = None;
+                    self.overlay = Overlay::None;
+
+                    if status.success() {
+                        self.local_images = Self::load_local_images();
+                        self.set_status(&format!("Downloaded: {}", name));
+                    } else {
+                        self.set_status(&format!("Download failed: {}", name));
+                    }
+                    return true;
+                }
+                Ok(None) => {
+                    // Still running
+                    return false;
+                }
+                Err(_) => {
+                    self.image_download_handle = None;
+                    self.image_download_name = None;
+                    self.image_download_start = None;
+                    self.image_download_total_bytes = None;
+                    self.overlay = Overlay::None;
+                    self.set_status("Download error");
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Get download elapsed time as formatted string
+    pub fn download_elapsed(&self) -> String {
+        if let Some(start) = self.image_download_start {
+            let secs = start.elapsed().as_secs();
+            format!("{}:{:02}", secs / 60, secs % 60)
+        } else {
+            "0:00".to_string()
+        }
     }
 
     // Get max memory index based on node's RAM
@@ -930,8 +997,8 @@ impl App {
         if let Some(node) = self.selected_node() {
             let hostname = node.hostname.clone();
 
-            // Build args - destroy needs -y to skip confirmation
-            let args: Vec<&str> = if action == "destroy" {
+            // Build args - destroy and remove need -y to skip confirmation
+            let args: Vec<&str> = if action == "destroy" || action == "remove" {
                 vec!["node", action, &hostname, "-y"]
             } else {
                 vec!["node", action, &hostname]
@@ -953,9 +1020,25 @@ impl App {
                             return; // Don't clear overlay yet
                         }
 
+                        // For remove, immediately remove from list and save cache
+                        if action == "remove" {
+                            // Kill any running poll and WAIT for it to die
+                            if let Some(mut handle) = self.poll_handle.take() {
+                                let _ = handle.kill();
+                                let _ = handle.wait(); // Wait for process to actually terminate
+                            }
+
+                            self.nodes.retain(|n| n.hostname != hostname);
+                            let _ = save_node_cache(&self.nodes);
+                            // Freeze node list for 5 seconds to prevent stale poll data from overwriting
+                            self.nodes_frozen_until = Some(Instant::now() + Duration::from_secs(5));
+                            // Adjust selection if needed
+                            if self.selected_node_idx >= self.nodes.len() && !self.nodes.is_empty() {
+                                self.selected_node_idx = self.nodes.len() - 1;
+                            }
+                        }
+
                         self.set_status(&format!("{} {}: success", action, hostname));
-                        // Poll to refresh cache after state-changing actions
-                        let _ = Command::new("cave").args(["poll"]).output();
                     } else {
                         let err = String::from_utf8_lossy(&output.stderr);
                         self.set_status(&format!("{} failed: {}", action, err.trim()));
@@ -963,7 +1046,6 @@ impl App {
                 }
                 Err(e) => self.set_status(&format!("Error: {}", e)),
             }
-            self.refresh_data();
         }
     }
 
@@ -1046,6 +1128,12 @@ impl App {
         match result {
             Ok(output) => {
                 if output.status.success() {
+                    // Kill any running poll and WAIT for it to die
+                    if let Some(mut handle) = self.poll_handle.take() {
+                        let _ = handle.kill();
+                        let _ = handle.wait(); // Wait for process to actually terminate
+                    }
+
                     // Add node to list immediately (no need to wait for poll)
                     self.nodes.push(CachedNode {
                         hostname: hostname.clone(),
@@ -1060,6 +1148,10 @@ impl App {
                         disks: vec![],
                         vm: None,
                     });
+                    // Save to cache file so refresh_data doesn't lose it
+                    let _ = save_node_cache(&self.nodes);
+                    // Freeze node list for 5 seconds to prevent stale poll data from overwriting
+                    self.nodes_frozen_until = Some(Instant::now() + Duration::from_secs(5));
                     self.set_status(&format!("Added node: {}", hostname));
                     self.overlay = Overlay::None;
                 } else {
@@ -1076,12 +1168,91 @@ impl App {
     }
 
     fn download_image(&mut self, url: &str) {
-        self.set_status(&format!("Downloading... (see terminal)"));
+        // Extract image name from URL
+        let name = url.split('/').last().unwrap_or("image").to_string();
 
-        // Run in background - user will see progress in terminal
-        let _ = Command::new("cave")
+        // Get total file size via curl HEAD request
+        let total_bytes = Command::new("curl")
+            .args(["-sI", url])
+            .output()
+            .ok()
+            .and_then(|out| {
+                String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .find(|l| l.to_lowercase().starts_with("content-length:"))
+                    .and_then(|l| l.split(':').nth(1))
+                    .and_then(|s| s.trim().parse::<u64>().ok())
+            });
+
+        // Log file for debugging
+        let log_path = Config::cave_dir().join("download.log");
+        let log_file = std::fs::File::create(&log_path).ok();
+        let stdout = log_file.as_ref()
+            .and_then(|f| f.try_clone().ok())
+            .map(std::process::Stdio::from)
+            .unwrap_or_else(std::process::Stdio::null);
+        let stderr = log_file
+            .map(std::process::Stdio::from)
+            .unwrap_or_else(std::process::Stdio::null);
+
+        // Run in background with output to log file
+        match Command::new("cave")
             .args(["image", "pull", url])
-            .spawn();
+            .stdout(stdout)
+            .stderr(stderr)
+            .spawn()
+        {
+            Ok(child) => {
+                self.image_download_handle = Some(child);
+                self.image_download_name = Some(name.clone());
+                self.image_download_start = Some(Instant::now());
+                self.image_download_total_bytes = total_bytes;
+                self.overlay = Overlay::ActionProgress(format!("Downloading {}...", name));
+            }
+            Err(e) => {
+                self.set_status(&format!("Download failed: {}", e));
+            }
+        }
+    }
+
+    /// Get current download progress by checking file size
+    pub fn download_progress(&self) -> String {
+        if let Some(ref name) = self.image_download_name {
+            let path = Config::images_dir().join(name);
+            let current_bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+
+            // Format current size
+            let current_str = if current_bytes >= 1_000_000_000 {
+                format!("{:.1} GB", current_bytes as f64 / 1_000_000_000.0)
+            } else {
+                format!("{:.0} MB", current_bytes as f64 / 1_000_000.0)
+            };
+
+            // If we know total size, show progress bar
+            if let Some(total) = self.image_download_total_bytes {
+                if total > 0 {
+                    let percent = (current_bytes as f64 / total as f64 * 100.0).min(100.0);
+                    let filled = (percent / 5.0) as usize; // 20 chars total
+                    let empty = 20 - filled;
+                    let bar = format!("{}{}",
+                        "█".repeat(filled),
+                        "░".repeat(empty)
+                    );
+
+                    let total_str = if total >= 1_000_000_000 {
+                        format!("{:.1} GB", total as f64 / 1_000_000_000.0)
+                    } else {
+                        format!("{:.0} MB", total as f64 / 1_000_000.0)
+                    };
+
+                    return format!("[{}] {:.0}% ({}/{})", bar, percent, current_str, total_str);
+                }
+            }
+
+            // Fallback: just show current size
+            return current_str;
+        }
+        "0 MB".to_string()
     }
 
 }
@@ -1156,6 +1327,26 @@ pub fn run() -> Result<()> {
             // Check if waiting for VM destroy confirmation
             if app.destroy_waiting {
                 app.check_destroy_complete();
+            }
+
+            // Check if image download completed, update progress in overlay
+            if app.image_download_handle.is_some() {
+                if !app.check_download_complete() {
+                    // Still downloading - update overlay with progress bar
+                    if let Some(ref name) = app.image_download_name {
+                        let progress = app.download_progress();
+                        let elapsed = app.download_elapsed();
+                        // Truncate name if too long
+                        let short_name = if name.len() > 40 {
+                            format!("{}...", &name[..37])
+                        } else {
+                            name.clone()
+                        };
+                        app.overlay = Overlay::ActionProgress(
+                            format!("{}\n\n{}\n\nElapsed: {}", short_name, progress, elapsed)
+                        );
+                    }
+                }
             }
 
             // Clear old status messages

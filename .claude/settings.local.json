@@ -15,7 +15,9 @@
       "Bash(scp:*)",
       "Bash(cave list:*)",
       "Bash(./target/release/cave init:*)",
-      "Bash(./target/release/cave node:*)"
+      "Bash(./target/release/cave node:*)",
+      "Bash(cave image list:*)",
+      "Bash(cave image:*)"
     ]
   }
 }

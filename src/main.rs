@@ -121,6 +121,9 @@ enum NodeAction {
     Remove {
         /// Hostname of the node
         hostname: String,
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long)]
+        force: bool,
     },
     /// Send Wake-on-LAN packet to power on a node
     Wake {
@@ -180,7 +183,7 @@ async fn main() -> anyhow::Result<()> {
                 let vm_name = name.as_deref().unwrap_or(&default_name);
                 destroy::run(&hostname, vm_name, force).await?
             }
-            NodeAction::Remove { hostname } => remove::run(&hostname).await?,
+            NodeAction::Remove { hostname, force } => remove::run(&hostname, force).await?,
             NodeAction::Wake { hostname } => wake::run(&hostname).await?,
             NodeAction::Shutdown { hostname } => shutdown::run(&hostname).await?,
             NodeAction::Restart { hostname } => {

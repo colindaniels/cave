@@ -881,7 +881,10 @@ fn draw_help_overlay(f: &mut Frame) {
 // ============================================================================
 
 fn draw_action_progress_overlay(f: &mut Frame, message: &str) {
-    let area = centered_rect(40, 7, f.area());
+    // Count lines in message to size overlay appropriately
+    let msg_lines: Vec<&str> = message.lines().collect();
+    let height = (msg_lines.len() + 4).max(7) as u16; // +4 for padding and borders
+    let area = centered_rect(60, height, f.area());
 
     // Clear area
     f.render_widget(Clear, area);
@@ -897,11 +900,15 @@ fn draw_action_progress_overlay(f: &mut Frame, message: &str) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let lines = vec![
-        Line::from(""),
-        Line::from(Span::styled(message, Style::default().fg(MAUVE).add_modifier(Modifier::BOLD))),
-        Line::from(""),
-    ];
+    // Build lines from message, splitting on newlines
+    let mut lines = vec![Line::from("")];
+    for line in msg_lines {
+        lines.push(Line::from(Span::styled(
+            line,
+            Style::default().fg(MAUVE).add_modifier(Modifier::BOLD)
+        )));
+    }
+    lines.push(Line::from(""));
 
     let para = Paragraph::new(lines).alignment(Alignment::Center);
     f.render_widget(para, inner);

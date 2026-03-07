@@ -6,9 +6,8 @@ use crate::config::Config;
 use crate::ssh;
 use crate::ui;
 
-pub async fn run(hostname: &str) -> Result<()> {
+pub async fn run(hostname: &str, force: bool) -> Result<()> {
     let mut config = Config::load()?;
-    let theme = ColorfulTheme::default();
 
     // Check if node exists
     if config.get_node(hostname).is_none() {
@@ -16,15 +15,18 @@ pub async fn run(hostname: &str) -> Result<()> {
         return Ok(());
     }
 
-    // Confirm removal
-    let confirm = Confirm::with_theme(&theme)
-        .with_prompt(format!("Remove node '{}'?", hostname))
-        .default(false)
-        .interact()?;
+    // Confirm removal (skip if force flag)
+    if !force {
+        let theme = ColorfulTheme::default();
+        let confirm = Confirm::with_theme(&theme)
+            .with_prompt(format!("Remove node '{}'?", hostname))
+            .default(false)
+            .interact()?;
 
-    if !confirm {
-        println!("{}", style("Cancelled").dim());
-        return Ok(());
+        if !confirm {
+            println!("{}", style("Cancelled").dim());
+            return Ok(());
+        }
     }
 
     // Remove from config
