@@ -8,7 +8,7 @@
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 917,
+    "ram_used_mb": 926,
     "disks": [
       {
         "name": "sda",
@@ -27,7 +27,7 @@
       "name": "mercury1-vm",
       "ip": "192.168.1.180",
       "memory": "4096M",
-      "memory_used_mb": 371,
+      "memory_used_mb": 372,
       "cpus": "2"
     }
   },
@@ -60,7 +60,7 @@
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 166,
+    "ram_used_mb": 169,
     "disks": [
       {
         "name": "nvme0n1",
@@ -80,7 +80,7 @@
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 164,
+    "ram_used_mb": 163,
     "disks": [
       {
         "name": "nvme0n1",
@@ -100,7 +100,7 @@
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 163,
+    "ram_used_mb": 164,
     "disks": [
       {
         "name": "nvme0n1",
@@ -160,7 +160,7 @@
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 163,
+    "ram_used_mb": 162,
     "disks": [
       {
         "name": "nvme0n1",
@@ -201,12 +201,12 @@
     "hostname": "platinum",
     "mac": "b0:41:6f:15:71:8d",
     "ip": "192.168.1.103",
-    "status": "standby",
+    "status": "active",
     "cpu": "Intel(R) Core(TM) Ultra 9 185H",
     "cores": "22 cores",
     "ram": "62.5G",
     "ram_total_mb": 63978,
-    "ram_used_mb": 192,
+    "ram_used_mb": 2435,
     "disks": [
       {
         "name": "nvme0n1",
@@ -215,6 +215,12 @@
         "model": "WD_BLACK SN850X 2000GB"
       }
     ],
-    "vm": null
+    "vm": {
+      "name": "platinum-vm",
+      "ip": "192.168.1.171",
+      "memory": "49152M",
+      "memory_used_mb": 776,
+      "cpus": "16"
+    }
   }
 ]

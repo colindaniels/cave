@@ -133,6 +133,7 @@ pub struct App {
     pub destroy_wait_start: Option<Instant>,
     pub destroy_last_poll: Option<Instant>,
     pub pending_action: Option<String>, // Pending node action (destroy, wake, etc.)
+    pub deploy_handle: Option<std::process::Child>, // Running deploy command
 
     // Discovered (uninitialized) nodes from PXE boot (hostname is empty)
     pub discovered_nodes: Vec<CachedNode>,
@@ -192,6 +193,7 @@ impl App {
             deploy_wait_start: None,
             deploy_last_poll: None,
             discovered_nodes: load_discovered_cache(),
+            deploy_handle: None,
             destroy_waiting: false,
             destroy_target: None,
             destroy_wait_start: None,
@@ -1241,44 +1243,41 @@ impl App {
         let cpus = CPU_OPTIONS[self.deploy_cpu_idx].0;
         let disk = self.selected_disk_size_gb();
 
-        // Run deploy command
-        let result = Command::new("cave")
+        // Log output to file for debugging
+        let log_path = Config::cave_dir().join("deploy.log");
+        let log_file = std::fs::File::create(&log_path).ok();
+        let stdout = log_file.as_ref()
+            .and_then(|f| f.try_clone().ok())
+            .map(std::process::Stdio::from)
+            .unwrap_or_else(std::process::Stdio::null);
+        let stderr = log_file
+            .map(std::process::Stdio::from)
+            .unwrap_or_else(std::process::Stdio::null);
+
+        // Spawn deploy command in background (non-blocking)
+        match Command::new("cave")
             .args([
                 "node", "deploy", &hostname, &image_name,
                 "--memory", &memory.to_string(),
                 "--cpus", &cpus.to_string(),
                 "--disk", &disk.to_string(),
             ])
-            .output();
-
-        match result {
-            Ok(output) => {
-                if output.status.success() {
-                    // Enter waiting state - poll until VM has IP
-                    self.deploy_waiting_for_ip = true;
-                    self.deploy_target = Some(hostname.clone());
-                    self.deploy_wait_start = Some(Instant::now());
-                    self.overlay = Overlay::ActionProgress("Waiting for VM IP...".to_string());
-                    // Don't set overlay to None - stay in waiting state
-                    return;
-                } else {
-                    let err = String::from_utf8_lossy(&output.stderr);
-                    let out = String::from_utf8_lossy(&output.stdout);
-                    let msg = if !err.trim().is_empty() {
-                        // Take last line of error for concise message
-                        err.lines().last().unwrap_or("Unknown error").to_string()
-                    } else if !out.trim().is_empty() {
-                        out.lines().last().unwrap_or("Unknown error").to_string()
-                    } else {
-                        format!("Exit code: {:?}", output.status.code())
-                    };
-                    self.set_status(&format!("Deploy failed: {}", msg));
-                }
+            .stdin(std::process::Stdio::null())
+            .stdout(stdout)
+            .stderr(stderr)
+            .spawn()
+        {
+            Ok(child) => {
+                self.deploy_handle = Some(child);
+                self.deploy_target = Some(hostname.clone());
+                self.deploy_wait_start = Some(Instant::now());
+                self.overlay = Overlay::ActionProgress(format!("Deploying to {}...", hostname));
             }
-            Err(e) => self.set_status(&format!("Deploy error: {}", e)),
+            Err(e) => {
+                self.set_status(&format!("Deploy error: {}", e));
+                self.overlay = Overlay::None;
+            }
         }
-
-        self.overlay = Overlay::None;
     }
 
     fn execute_node_init(&mut self) {
@@ -1486,6 +1485,52 @@ pub fn run() -> Result<()> {
 
         if last_tick.elapsed() >= tick_rate {
             last_tick = Instant::now();
+
+            // Check if deploy command finished
+            if app.deploy_handle.is_some() {
+                if let Some(ref mut handle) = app.deploy_handle {
+                    match handle.try_wait() {
+                        Ok(Some(status)) => {
+                            app.deploy_handle = None;
+                            if status.success() {
+                                // Deploy done, now wait for IP
+                                app.deploy_waiting_for_ip = true;
+                                app.deploy_wait_start = Some(Instant::now());
+                                let target = app.deploy_target.as_deref().unwrap_or("VM");
+                                app.overlay = Overlay::ActionProgress(
+                                    format!("Acquiring IP for {}...", target)
+                                );
+                            } else {
+                                // Read error from log
+                                let log_path = Config::cave_dir().join("deploy.log");
+                                let err_msg = std::fs::read_to_string(&log_path)
+                                    .ok()
+                                    .and_then(|s| s.lines().last().map(|l| l.to_string()))
+                                    .unwrap_or_else(|| "check ~/cave/deploy.log".to_string());
+                                app.deploy_target = None;
+                                app.deploy_wait_start = None;
+                                app.overlay = Overlay::None;
+                                app.set_status(&format!("Deploy failed: {}", err_msg));
+                            }
+                        }
+                        Ok(None) => {
+                            // Still running - update elapsed time
+                            if let Some(start) = app.deploy_wait_start {
+                                let secs = start.elapsed().as_secs();
+                                let target = app.deploy_target.as_deref().unwrap_or("VM");
+                                app.overlay = Overlay::ActionProgress(
+                                    format!("Deploying to {}...\n\nElapsed: {}:{:02}", target, secs / 60, secs % 60)
+                                );
+                            }
+                        }
+                        Err(_) => {
+                            app.deploy_handle = None;
+                            app.overlay = Overlay::None;
+                            app.set_status("Deploy error");
+                        }
+                    }
+                }
+            }
 
             // Check if waiting for VM IP (poll every tick while waiting)
             if app.deploy_waiting_for_ip {

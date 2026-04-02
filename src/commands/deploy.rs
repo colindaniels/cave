@@ -195,6 +195,7 @@ pub async fn run(
         (8192, "8192 MB (8 GB)"),
         (16384, "16384 MB (16 GB)"),
         (32768, "32768 MB (32 GB)"),
+        (49152, "49152 MB (48 GB)"),
         (65536, "65536 MB (64 GB)"),
     ];
 
@@ -212,9 +213,9 @@ pub async fn run(
     let memory_values: Vec<u32> = filtered_memory.iter().map(|(val, _)| *val).collect();
 
     let memory = if let Some(mem) = memory_opt {
-        // Non-interactive: use provided value (validate it's available)
-        if !memory_values.contains(&mem) {
-            anyhow::bail!("Memory {} MB not available (max: {} MB)", mem, memory_values.last().unwrap_or(&0));
+        // Non-interactive: validate against available RAM
+        if mem > available_ram {
+            anyhow::bail!("Memory {} MB exceeds available RAM ({} MB)", mem, available_ram);
         }
         mem
     } else {
