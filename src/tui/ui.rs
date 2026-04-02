@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use super::app::{
-    App, DeployStep, Overlay, CPU_OPTIONS, MEMORY_OPTIONS, NODE_ACTIONS,
+    App, DeployStep, Overlay, CPU_OPTIONS, DISCOVERED_NODE_ACTIONS, MEMORY_OPTIONS, NODE_ACTIONS,
 };
 use super::widgets::logo::LOGO;
 use crate::commands::images::CLOUD_IMAGES;
@@ -73,6 +73,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Overlay::ActionProgress(msg) => draw_action_progress_overlay(f, msg),
         Overlay::ImageDownload => draw_image_download_overlay(f, app),
         Overlay::NodeInit => draw_node_init_overlay(f, app),
+        Overlay::ConfirmRemove => draw_confirm_remove_overlay(f, app),
         Overlay::Help => draw_help_overlay(f),
     }
 }
@@ -228,7 +229,8 @@ fn draw_node_list(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    if app.nodes.is_empty() {
+    let total = app.nodes.len() + app.discovered_nodes.len();
+    if total == 0 {
         let empty = Paragraph::new(vec![
             Line::from(""),
             Line::from(Span::styled("No nodes", Style::default().fg(SUBTEXT))),
@@ -240,7 +242,7 @@ fn draw_node_list(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let items: Vec<ListItem> = app
+    let mut items: Vec<ListItem> = app
         .nodes
         .iter()
         .enumerate()
@@ -278,6 +280,23 @@ fn draw_node_list(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
+    // Append discovered (uninitialized) nodes
+    for (i, disc) in app.discovered_nodes.iter().enumerate() {
+        let idx = app.nodes.len() + i;
+        let style = if idx == app.selected_node_idx {
+            Style::default().fg(TEXT).bg(SURFACE0).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(SUBTEXT)
+        };
+
+        items.push(ListItem::new(vec![
+            Line::from(vec![
+                Span::styled(" ○ ", Style::default().fg(BLUE)),
+                Span::styled(&disc.mac, style),
+            ]),
+        ]).style(style));
+    }
+
     let list = List::new(items);
     f.render_widget(list, inner);
 }
@@ -294,13 +313,22 @@ fn draw_node_details(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let Some(node) = app.selected_node() else {
+    // Get selected node - could be registered or discovered
+    let node = if app.selected_node_idx < app.nodes.len() {
+        app.selected_node()
+    } else {
+        app.selected_discovered()
+    };
+
+    let Some(node) = node else {
         let empty = Paragraph::new("Select a node")
             .style(Style::default().fg(SUBTEXT))
             .alignment(Alignment::Center);
         f.render_widget(empty, inner);
         return;
     };
+
+    let is_discovered = app.is_selected_discovered();
 
     // Split into info area and actions
     let detail_chunks = Layout::default()
@@ -334,14 +362,20 @@ fn draw_node_details(f: &mut Frame, app: &App, area: Rect) {
         _ => (node.ram.clone(), TEXT), // Fallback to the raw string like "7.5G"
     };
 
+    let (section_title, name_display) = if is_discovered {
+        ("  ── Discovered Node ──", "Not initialized".to_string())
+    } else {
+        ("  ── Node ──", node.hostname.clone())
+    };
+
     let mut info_lines = vec![
         // Node section header
         Line::from(vec![
-            Span::styled("  ── Node ──", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
+            Span::styled(section_title, Style::default().fg(if is_discovered { BLUE } else { LAVENDER }).add_modifier(Modifier::BOLD)),
         ]),
         Line::from(vec![
             Span::styled("  Name     ", Style::default().fg(SUBTEXT)),
-            Span::styled(&node.hostname, Style::default().fg(TEXT).add_modifier(Modifier::BOLD)),
+            Span::styled(name_display, Style::default().fg(if is_discovered { BLUE } else { TEXT }).add_modifier(Modifier::BOLD)),
         ]),
         Line::from(vec![
             Span::styled("  Status   ", Style::default().fg(SUBTEXT)),
@@ -479,9 +513,17 @@ fn draw_node_actions_overlay(f: &mut Frame, app: &App) {
     let area = centered_rect(40, 12, f.area());
     f.render_widget(Clear, area);
 
-    let node_name = app.selected_node()
-        .map(|n| n.hostname.as_str())
-        .unwrap_or("Node");
+    let (node_name, actions) = if app.is_selected_discovered() {
+        let name = app.selected_discovered()
+            .map(|n| n.mac.as_str())
+            .unwrap_or("Unknown");
+        (name, DISCOVERED_NODE_ACTIONS)
+    } else {
+        let name = app.selected_node()
+            .map(|n| n.hostname.as_str())
+            .unwrap_or("Node");
+        (name, NODE_ACTIONS)
+    };
 
     let block = Block::default()
         .title(format!(" {} ", node_name))
@@ -494,7 +536,7 @@ fn draw_node_actions_overlay(f: &mut Frame, app: &App) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let items: Vec<ListItem> = NODE_ACTIONS
+    let items: Vec<ListItem> = actions
         .iter()
         .enumerate()
         .map(|(i, action)| {
@@ -837,6 +879,52 @@ fn draw_node_init_overlay(f: &mut Frame, app: &App) {
         Line::from(""),
         Line::from(""),
         Line::from(Span::styled("Tab to switch fields, Enter to add", Style::default().fg(SUBTEXT))),
+    ];
+
+    let para = Paragraph::new(lines);
+    f.render_widget(para, inner);
+}
+
+fn draw_confirm_remove_overlay(f: &mut Frame, app: &App) {
+    let area = centered_rect(50, 10, f.area());
+    f.render_widget(Clear, area);
+
+    let hostname = app.selected_node()
+        .map(|n| n.hostname.as_str())
+        .unwrap_or("node");
+
+    let block = Block::default()
+        .title(" Confirm Remove ")
+        .title_style(Style::default().fg(RED).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(RED))
+        .style(Style::default().bg(BASE));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Remove ", Style::default().fg(TEXT)),
+            Span::styled(hostname, Style::default().fg(RED).add_modifier(Modifier::BOLD)),
+            Span::styled("?", Style::default().fg(TEXT)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  This will stop any running VM and", Style::default().fg(SUBTEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  wipe all VM data from the node.", Style::default().fg(SUBTEXT)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  [y] ", Style::default().fg(RED).add_modifier(Modifier::BOLD)),
+            Span::styled("Confirm    ", Style::default().fg(TEXT)),
+            Span::styled("[n/Esc] ", Style::default().fg(BLUE).add_modifier(Modifier::BOLD)),
+            Span::styled("Cancel", Style::default().fg(TEXT)),
+        ]),
     ];
 
     let para = Paragraph::new(lines);

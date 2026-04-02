@@ -17,7 +17,12 @@
       "Bash(./target/release/cave init:*)",
       "Bash(./target/release/cave node:*)",
       "Bash(cave image list:*)",
-      "Bash(cave image:*)"
+      "Bash(cave image:*)",
+      "Bash(cargo run:*)",
+      "Bash(git checkout:*)",
+      "Bash(sudo chown:*)",
+      "Bash(ls:*)",
+      "Bash(echo \"EXIT CODE: $?\")"
     ]
   }
 }

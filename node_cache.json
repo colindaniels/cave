@@ -3,12 +3,12 @@
     "hostname": "mercury1",
     "mac": "7c:83:34:bb:91:e2",
     "ip": "192.168.1.11",
-    "status": "standby",
+    "status": "active",
     "cpu": "Intel(R) N95",
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 172,
+    "ram_used_mb": 917,
     "disks": [
       {
         "name": "sda",
@@ -23,7 +23,13 @@
         "model": "Timetec 35TTFP6PCIE-256G"
       }
     ],
-    "vm": null
+    "vm": {
+      "name": "mercury1-vm",
+      "ip": "192.168.1.180",
+      "memory": "4096M",
+      "memory_used_mb": 371,
+      "cpus": "2"
+    }
   },
   {
     "hostname": "mercury2",
@@ -33,7 +39,7 @@
     "cpu": "Intel(R) N95",
     "cores": "4 cores",
     "ram": "7.5G",
-    "ram_total_mb": 7723,
+    "ram_total_mb": 7724,
     "ram_used_mb": 117,
     "disks": [
       {
@@ -54,7 +60,7 @@
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 162,
+    "ram_used_mb": 166,
     "disks": [
       {
         "name": "nvme0n1",
@@ -74,7 +80,7 @@
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 167,
+    "ram_used_mb": 164,
     "disks": [
       {
         "name": "nvme0n1",
@@ -113,8 +119,8 @@
     "cpu": "Intel(R) N95",
     "cores": "4 cores",
     "ram": "7.5G",
-    "ram_total_mb": 7723,
-    "ram_used_mb": 114,
+    "ram_total_mb": 7724,
+    "ram_used_mb": 118,
     "disks": [
       {
         "name": "nvme0n1",
@@ -134,7 +140,7 @@
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 161,
+    "ram_used_mb": 162,
     "disks": [
       {
         "name": "nvme0n1",
@@ -166,26 +172,6 @@
     "vm": null
   },
   {
-    "hostname": "platinum",
-    "mac": "b0:41:6f:15:71:8d",
-    "ip": "192.168.1.103",
-    "status": "standby",
-    "cpu": "Intel(R) Core(TM) Ultra 9 185H",
-    "cores": "22 cores",
-    "ram": "62.5G",
-    "ram_total_mb": 63978,
-    "ram_used_mb": 173,
-    "disks": [
-      {
-        "name": "nvme0n1",
-        "size_bytes": 2000398934016,
-        "disk_type": "SSD",
-        "model": "WD_BLACK SN850X 2000GB"
-      }
-    ],
-    "vm": null
-  },
-  {
     "hostname": "lithium",
     "mac": "3c:6d:66:b5:26:10",
     "ip": null,
@@ -201,19 +187,32 @@
   {
     "hostname": "plutonium",
     "mac": "d4:5d:64:3e:ac:7b",
-    "ip": "192.168.1.191",
+    "ip": null,
+    "status": "offline",
+    "cpu": "N/A",
+    "cores": "N/A",
+    "ram": "N/A",
+    "ram_total_mb": null,
+    "ram_used_mb": null,
+    "disks": [],
+    "vm": null
+  },
+  {
+    "hostname": "platinum",
+    "mac": "b0:41:6f:15:71:8d",
+    "ip": "192.168.1.103",
     "status": "standby",
-    "cpu": "Intel(R) Core(TM) i9-9900K CPU @ 3.60GHz",
-    "cores": "16 cores",
-    "ram": "62.7G",
-    "ram_total_mb": 64169,
-    "ram_used_mb": 175,
+    "cpu": "Intel(R) Core(TM) Ultra 9 185H",
+    "cores": "22 cores",
+    "ram": "62.5G",
+    "ram_total_mb": 63978,
+    "ram_used_mb": 192,
     "disks": [
       {
         "name": "nvme0n1",
-        "size_bytes": 1000204886016,
+        "size_bytes": 2000398934016,
         "disk_type": "SSD",
-        "model": "Samsung SSD 970 EVO Plus 1TB"
+        "model": "WD_BLACK SN850X 2000GB"
       }
     ],
     "vm": null

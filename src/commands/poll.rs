@@ -1,7 +1,10 @@
 use anyhow::Result;
 use std::thread;
 
-use crate::config::{save_ip_cache, save_node_cache, scan_network, CachedDisk, CachedNode, CachedVm, Config};
+use std::collections::HashSet;
+use std::time::Duration;
+
+use crate::config::{save_discovered_cache, save_ip_cache, save_node_cache, scan_network, CachedDisk, CachedNode, CachedVm, Config};
 use crate::ssh::{self, SshConnection};
 use crate::status::{get_node_info, NodeStatus};
 use crate::vm;
@@ -13,12 +16,14 @@ pub async fn run() -> Result<()> {
 
     let config = Config::load()?;
 
-    if config.nodes.is_empty() {
-        return Ok(());
-    }
-
     // Scan network
     let mac_to_ip = scan_network();
+
+    if config.nodes.is_empty() {
+        // Still discover unknown nodes even with no registered nodes
+        discover_unknown_nodes(&config, &mac_to_ip, &[]);
+        return Ok(());
+    }
 
     // Update SSH config and gather full node info in parallel
     let handles: Vec<_> = config
@@ -97,7 +102,88 @@ pub async fn run() -> Result<()> {
     let _ = save_ip_cache(&verified_ips);
     let _ = save_node_cache(&cached_nodes);
 
+    // Discover unknown PXE-booted nodes
+    discover_unknown_nodes(&config, &mac_to_ip, &cached_nodes);
+
     Ok(())
+}
+
+/// Check unknown MACs on the network - if they respond to our SSH key, they PXE-booted from us
+fn discover_unknown_nodes(config: &Config, mac_to_ip: &std::collections::HashMap<String, String>, cached_nodes: &[CachedNode]) {
+    // Collect all known MACs: registered nodes + their VMs
+    let mut known_macs: HashSet<String> = config.nodes.iter()
+        .map(|n| n.mac.to_lowercase())
+        .collect();
+
+    // Also exclude VM MACs (generated from VM name)
+    for node in cached_nodes {
+        if let Some(ref vm) = node.vm {
+            let vm_mac = vm::generate_mac_for_lookup(&vm.name).to_lowercase();
+            known_macs.insert(vm_mac);
+        }
+    }
+
+    let unknown: Vec<(String, String)> = mac_to_ip.iter()
+        .filter(|(mac, _)| !known_macs.contains(mac.as_str()))
+        .map(|(mac, ip)| (mac.clone(), ip.clone()))
+        .collect();
+
+    if unknown.is_empty() {
+        let _ = save_discovered_cache(&[]);
+        return;
+    }
+
+    // Probe unknown MACs with short timeout and gather full info in parallel
+    let handles: Vec<_> = unknown.into_iter()
+        .take(20) // Limit to avoid flooding
+        .map(|(mac, ip)| {
+            thread::spawn(move || {
+                // Quick SSH probe - if it fails, not a PXE node
+                let ssh = SshConnection::connect_timeout(&ip, Duration::from_secs(2)).ok()?;
+                drop(ssh);
+
+                // It responded - gather full info like a registered node
+                let dummy_node = crate::config::Node {
+                    hostname: String::new(),
+                    mac: mac.clone(),
+                };
+                let info = get_node_info(&dummy_node, Some(&ip));
+
+                let (ram_total_mb, ram_used_mb) = get_host_ram_usage(&ip);
+
+                let vm_info = if info.status == NodeStatus::Active {
+                    get_vm_info(&ip)
+                } else {
+                    None
+                };
+
+                Some(CachedNode {
+                    hostname: String::new(), // Empty = discovered
+                    mac,
+                    ip: Some(ip),
+                    status: info.status.to_string(),
+                    cpu: info.specs.cpu,
+                    cores: info.specs.cores,
+                    ram: info.specs.ram,
+                    ram_total_mb,
+                    ram_used_mb,
+                    disks: info.specs.disks.iter().map(|d| CachedDisk {
+                        name: d.name.clone(),
+                        size_bytes: d.size_bytes,
+                        disk_type: d.disk_type.clone(),
+                        model: d.model.clone(),
+                    }).collect(),
+                    vm: vm_info,
+                })
+            })
+        })
+        .collect();
+
+    let discovered: Vec<CachedNode> = handles.into_iter()
+        .filter_map(|h| h.join().ok().flatten())
+        .collect();
+
+    let _ = save_discovered_cache(&discovered);
 }
 
 /// Get host RAM usage (total, used) in MB

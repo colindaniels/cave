@@ -156,6 +156,25 @@ pub struct CachedVm {
     pub cpus: String,
 }
 
+/// Load discovered (uninitialized) nodes cache - same struct as CachedNode, hostname is empty
+pub fn load_discovered_cache() -> Vec<CachedNode> {
+    let cache_path = Config::cave_dir().join("discovered_cache.json");
+    if let Ok(content) = fs::read_to_string(&cache_path) {
+        if let Ok(cache) = serde_json::from_str(&content) {
+            return cache;
+        }
+    }
+    Vec::new()
+}
+
+/// Save discovered nodes cache
+pub fn save_discovered_cache(cache: &[CachedNode]) -> Result<()> {
+    let cache_path = Config::cave_dir().join("discovered_cache.json");
+    let content = serde_json::to_string_pretty(cache)?;
+    fs::write(&cache_path, content)?;
+    Ok(())
+}
+
 /// Load full node cache
 pub fn load_node_cache() -> Vec<CachedNode> {
     let cache_path = Config::cave_dir().join("node_cache.json");

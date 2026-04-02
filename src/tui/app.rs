@@ -10,7 +10,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use crate::commands::images::{CloudImage, CLOUD_IMAGES};
-use crate::config::{load_node_cache, save_node_cache, CachedNode, Config};
+use crate::config::{load_discovered_cache, load_node_cache, save_node_cache, CachedNode, Config};
 
 use super::ui;
 
@@ -24,6 +24,7 @@ pub enum Overlay {
     NodeActions,  // Action menu for selected node
     Deploy(DeployStep),
     ActionProgress(String),  // Running an action (e.g., "Destroying VM...")
+    ConfirmRemove,  // Confirm before removing a node (wipes VM data)
     ImageDownload,
     NodeInit,
     Help,
@@ -50,6 +51,8 @@ pub const MEMORY_OPTIONS: &[(u64, &str)] = &[
     (8192, "8 GB"),
     (16384, "16 GB"),
     (32768, "32 GB"),
+    (49152, "48 GB"),
+    (65536, "64 GB"),
 ];
 
 pub const CPU_OPTIONS: &[(u32, &str)] = &[
@@ -82,6 +85,14 @@ pub const NODE_ACTIONS: &[&str] = &[
     "Shutdown",
     "Restart",
     "Remove Node",
+];
+
+pub const DISCOVERED_NODE_ACTIONS: &[&str] = &[
+    "Initialize",
+    "Destroy VM",
+    "Wake (WoL)",
+    "Shutdown",
+    "Restart",
 ];
 
 // ============================================================================
@@ -122,6 +133,9 @@ pub struct App {
     pub destroy_wait_start: Option<Instant>,
     pub destroy_last_poll: Option<Instant>,
     pub pending_action: Option<String>, // Pending node action (destroy, wake, etc.)
+
+    // Discovered (uninitialized) nodes from PXE boot (hostname is empty)
+    pub discovered_nodes: Vec<CachedNode>,
 
     // Node init form
     pub node_init_hostname: String,
@@ -177,6 +191,7 @@ impl App {
             deploy_target: None,
             deploy_wait_start: None,
             deploy_last_poll: None,
+            discovered_nodes: load_discovered_cache(),
             destroy_waiting: false,
             destroy_target: None,
             destroy_wait_start: None,
@@ -312,6 +327,7 @@ impl App {
 
         if !nodes_frozen {
             self.nodes = load_node_cache();
+            self.discovered_nodes = load_discovered_cache();
         }
 
         self.local_images = Self::load_local_images();
@@ -321,8 +337,9 @@ impl App {
         self.last_refresh = Instant::now();
 
         // Clamp selection
-        if !self.nodes.is_empty() && self.selected_node_idx >= self.nodes.len() {
-            self.selected_node_idx = self.nodes.len() - 1;
+        let total = self.nodes.len() + self.discovered_nodes.len();
+        if total > 0 && self.selected_node_idx >= total {
+            self.selected_node_idx = total - 1;
         }
     }
 
@@ -638,6 +655,18 @@ impl App {
             Overlay::ImageDownload => self.handle_image_download_keys(code),
             Overlay::NodeInit => self.handle_node_init_keys(code),
             Overlay::Help => self.handle_help_keys(code),
+            Overlay::ConfirmRemove => {
+                match code {
+                    KeyCode::Char('y') | KeyCode::Enter => {
+                        self.pending_action = Some("remove".to_string());
+                        self.overlay = Overlay::ActionProgress("Removing node and wiping VM data...".to_string());
+                    }
+                    KeyCode::Char('n') | KeyCode::Esc => {
+                        self.overlay = Overlay::None;
+                    }
+                    _ => {}
+                }
+            }
             Overlay::ActionProgress(_) => {} // No input during action
         }
     }
@@ -652,21 +681,24 @@ impl App {
 
             // Navigation
             KeyCode::Char('j') | KeyCode::Down => {
-                if !self.nodes.is_empty() {
-                    self.selected_node_idx = (self.selected_node_idx + 1) % self.nodes.len();
+                let total = self.nodes.len() + self.discovered_nodes.len();
+                if total > 0 {
+                    self.selected_node_idx = (self.selected_node_idx + 1) % total;
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                if !self.nodes.is_empty() {
+                let total = self.nodes.len() + self.discovered_nodes.len();
+                if total > 0 {
                     self.selected_node_idx = self.selected_node_idx
                         .checked_sub(1)
-                        .unwrap_or(self.nodes.len() - 1);
+                        .unwrap_or(total - 1);
                 }
             }
 
             // Open action menu for selected node
             KeyCode::Enter => {
-                if self.selected_node().is_some() {
+                let total = self.nodes.len() + self.discovered_nodes.len();
+                if self.selected_node_idx < total {
                     self.selected_action_idx = 0;
                     self.overlay = Overlay::NodeActions;
                 }
@@ -698,16 +730,35 @@ impl App {
         }
     }
 
+    /// Whether the currently selected node is a discovered (uninitialized) node
+    pub fn is_selected_discovered(&self) -> bool {
+        self.selected_node_idx >= self.nodes.len()
+    }
+
+    /// Get the currently selected discovered node
+    pub fn selected_discovered(&self) -> Option<&CachedNode> {
+        if self.is_selected_discovered() {
+            self.discovered_nodes.get(self.selected_node_idx - self.nodes.len())
+        } else {
+            None
+        }
+    }
+
     fn handle_node_actions_keys(&mut self, code: KeyCode) {
+        let actions = if self.is_selected_discovered() {
+            DISCOVERED_NODE_ACTIONS
+        } else {
+            NODE_ACTIONS
+        };
         match code {
             KeyCode::Esc => self.overlay = Overlay::None,
             KeyCode::Up | KeyCode::Char('k') => {
                 self.selected_action_idx = self.selected_action_idx
                     .checked_sub(1)
-                    .unwrap_or(NODE_ACTIONS.len() - 1);
+                    .unwrap_or(actions.len() - 1);
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                self.selected_action_idx = (self.selected_action_idx + 1) % NODE_ACTIONS.len();
+                self.selected_action_idx = (self.selected_action_idx + 1) % actions.len();
             }
             KeyCode::Enter => {
                 self.execute_selected_action();
@@ -717,38 +768,70 @@ impl App {
     }
 
     fn execute_selected_action(&mut self) {
-        match self.selected_action_idx {
-            0 => {
-                // Deploy VM
-                self.overlay = Overlay::None;
-                self.start_deploy();
+        if self.is_selected_discovered() {
+            // Discovered node actions: Initialize, Destroy, Wake, Shutdown, Restart
+            match self.selected_action_idx {
+                0 => {
+                    // Initialize - open init form with MAC pre-filled
+                    if let Some(disc) = self.selected_discovered().cloned() {
+                        self.node_init_hostname.clear();
+                        self.node_init_mac = disc.mac.clone();
+                        self.node_init_field = 0;
+                        self.overlay = Overlay::NodeInit;
+                    }
+                }
+                1 => {
+                    self.pending_action = Some("destroy".to_string());
+                    self.overlay = Overlay::ActionProgress("Destroying VM...".to_string());
+                }
+                2 => {
+                    self.pending_action = Some("wake".to_string());
+                    self.overlay = Overlay::ActionProgress("Waking node...".to_string());
+                }
+                3 => {
+                    self.pending_action = Some("shutdown".to_string());
+                    self.overlay = Overlay::ActionProgress("Shutting down...".to_string());
+                }
+                4 => {
+                    self.pending_action = Some("restart".to_string());
+                    self.overlay = Overlay::ActionProgress("Restarting...".to_string());
+                }
+                _ => {}
             }
-            1 => {
-                // Destroy VM
-                self.pending_action = Some("destroy".to_string());
-                self.overlay = Overlay::ActionProgress("Destroying VM...".to_string());
+        } else {
+            // Registered node actions
+            match self.selected_action_idx {
+                0 => {
+                    // Deploy VM
+                    self.overlay = Overlay::None;
+                    self.start_deploy();
+                }
+                1 => {
+                    // Destroy VM
+                    self.pending_action = Some("destroy".to_string());
+                    self.overlay = Overlay::ActionProgress("Destroying VM...".to_string());
+                }
+                2 => {
+                    // Wake (WoL)
+                    self.pending_action = Some("wake".to_string());
+                    self.overlay = Overlay::ActionProgress("Waking node...".to_string());
+                }
+                3 => {
+                    // Shutdown
+                    self.pending_action = Some("shutdown".to_string());
+                    self.overlay = Overlay::ActionProgress("Shutting down...".to_string());
+                }
+                4 => {
+                    // Restart
+                    self.pending_action = Some("restart".to_string());
+                    self.overlay = Overlay::ActionProgress("Restarting...".to_string());
+                }
+                5 => {
+                    // Remove Node - show confirmation first
+                    self.overlay = Overlay::ConfirmRemove;
+                }
+                _ => {}
             }
-            2 => {
-                // Wake (WoL)
-                self.pending_action = Some("wake".to_string());
-                self.overlay = Overlay::ActionProgress("Waking node...".to_string());
-            }
-            3 => {
-                // Shutdown
-                self.pending_action = Some("shutdown".to_string());
-                self.overlay = Overlay::ActionProgress("Shutting down...".to_string());
-            }
-            4 => {
-                // Restart
-                self.pending_action = Some("restart".to_string());
-                self.overlay = Overlay::ActionProgress("Restarting...".to_string());
-            }
-            5 => {
-                // Remove Node
-                self.pending_action = Some("remove".to_string());
-                self.overlay = Overlay::ActionProgress("Removing node...".to_string());
-            }
-            _ => {}
         }
     }
 
@@ -994,6 +1077,11 @@ impl App {
     }
 
     fn execute_node_action(&mut self, action: &str) {
+        if self.is_selected_discovered() {
+            self.execute_discovered_node_action(action);
+            return;
+        }
+
         if let Some(node) = self.selected_node() {
             let hostname = node.hostname.clone();
 
@@ -1047,6 +1135,86 @@ impl App {
                 Err(e) => self.set_status(&format!("Error: {}", e)),
             }
         }
+    }
+
+    /// Execute actions on discovered nodes directly (not via cave CLI)
+    fn execute_discovered_node_action(&mut self, action: &str) {
+        let Some(disc) = self.selected_discovered().cloned() else { return };
+        let label = disc.ip.as_deref().unwrap_or(&disc.mac);
+
+        match action {
+            "wake" => {
+                // Send WoL magic packet directly
+                if let Ok(mac_bytes) = Self::parse_mac(&disc.mac) {
+                    let mut packet = vec![0xFFu8; 6];
+                    for _ in 0..16 {
+                        packet.extend_from_slice(&mac_bytes);
+                    }
+                    if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
+                        let _ = socket.set_broadcast(true);
+                        if socket.send_to(&packet, "255.255.255.255:9").is_ok() {
+                            self.set_status(&format!("WoL sent to {}", label));
+                        } else {
+                            self.set_status("Failed to send WoL packet");
+                        }
+                    }
+                } else {
+                    self.set_status("Invalid MAC address");
+                }
+            }
+            "shutdown" | "restart" => {
+                if let Some(ref ip) = disc.ip {
+                    let cmd = if action == "shutdown" { "poweroff" } else { "reboot" };
+                    let result = Command::new("ssh")
+                        .args([
+                            "-i", &Config::ssh_private_key().to_string_lossy(),
+                            "-o", "StrictHostKeyChecking=no",
+                            "-o", "ConnectTimeout=5",
+                            &format!("root@{}", ip),
+                            &format!("nohup {} &", cmd),
+                        ])
+                        .output();
+                    match result {
+                        Ok(_) => self.set_status(&format!("{} sent to {}", action, label)),
+                        Err(e) => self.set_status(&format!("{} failed: {}", action, e)),
+                    }
+                } else {
+                    self.set_status("No IP address available");
+                }
+            }
+            "destroy" => {
+                if let Some(ref ip) = disc.ip {
+                    // Kill any running VMs on the node
+                    let result = Command::new("ssh")
+                        .args([
+                            "-i", &Config::ssh_private_key().to_string_lossy(),
+                            "-o", "StrictHostKeyChecking=no",
+                            "-o", "ConnectTimeout=5",
+                            &format!("root@{}", ip),
+                            "killall qemu-system-x86_64 2>/dev/null; rm -f /var/run/cave/*.pid",
+                        ])
+                        .output();
+                    match result {
+                        Ok(_) => self.set_status(&format!("VM destroyed on {}", label)),
+                        Err(e) => self.set_status(&format!("destroy failed: {}", e)),
+                    }
+                } else {
+                    self.set_status("No IP address available");
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn parse_mac(mac: &str) -> Result<[u8; 6], ()> {
+        let bytes: Vec<u8> = mac
+            .split(':')
+            .filter_map(|s| u8::from_str_radix(s, 16).ok())
+            .collect();
+        if bytes.len() != 6 { return Err(()); }
+        let mut arr = [0u8; 6];
+        arr.copy_from_slice(&bytes);
+        Ok(arr)
     }
 
     fn execute_deploy(&mut self) {

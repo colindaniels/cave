@@ -36,13 +36,13 @@ hostname = "mercury8"
 mac = "7c:83:34:bb:93:82"
 
 [[nodes]]
-hostname = "platinum"
-mac = "b0:41:6f:15:71:8d"
-
-[[nodes]]
 hostname = "lithium"
 mac = "3c:6d:66:b5:26:10"
 
 [[nodes]]
 hostname = "plutonium"
 mac = "d4:5d:64:3e:ac:7b"
+
+[[nodes]]
+hostname = "platinum"
+mac = "b0:41:6f:15:71:8d"
