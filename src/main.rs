@@ -105,6 +105,9 @@ enum NodeAction {
         /// Disk size in GB
         #[arg(long)]
         disk: Option<u64>,
+        /// SSH password for the VM (enables password auth)
+        #[arg(long)]
+        password: Option<String>,
     },
     /// Stop and remove the VM on a node
     Destroy {
@@ -175,8 +178,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::Node { action } => match action {
             NodeAction::Init { hostname, mac } => init::run(&hostname, &mac).await?,
             NodeAction::List => list::run().await?,
-            NodeAction::Deploy { hostname, image, memory, cpus, disk } => {
-                deploy::run(hostname.as_deref(), image.as_deref(), memory, cpus, disk).await?
+            NodeAction::Deploy { hostname, image, memory, cpus, disk, password } => {
+                deploy::run(hostname.as_deref(), image.as_deref(), memory, cpus, disk, password).await?
             }
             NodeAction::Destroy { hostname, name, force } => {
                 let default_name = format!("{}-vm", hostname);

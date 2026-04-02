@@ -140,7 +140,9 @@ pub struct App {
     pub deploy_memory_idx: usize,
     pub deploy_cpu_idx: usize,
     pub deploy_disk_size_idx: usize,    // How much storage on that disk
-    pub deploy_config_field: usize,     // 0=memory, 1=cpu, 2=disk size
+    pub deploy_config_field: usize,     // 0=memory, 1=cpu, 2=disk size, 3=password toggle
+    pub deploy_password_enabled: bool,  // Enable SSH password login for VM
+    pub deploy_password: String,        // Password value
     pub deploy_pending: bool,           // True when deploy should run on next tick
     pub deploy_waiting_for_ip: bool,    // True when waiting for VM to get IP
     pub deploy_target: Option<String>,  // Hostname we're deploying to
@@ -206,6 +208,8 @@ impl App {
             deploy_cpu_idx: 1,    // Default 2 CPUs
             deploy_disk_size_idx: 2,   // Default 50GB
             deploy_config_field: 0,
+            deploy_password_enabled: false,
+            deploy_password: String::new(),
             deploy_pending: false,
             deploy_waiting_for_ip: false,
             deploy_target: None,
@@ -995,15 +999,21 @@ impl App {
 
             DeployStep::Configure => match code {
                 KeyCode::Esc => self.overlay = Overlay::Deploy(DeployStep::SelectDisk),
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.deploy_config_field = self.deploy_config_field.saturating_sub(1);
+                KeyCode::Up | KeyCode::Char('k') if self.deploy_config_field != 4 => {
+                    // Skip password input field when navigating (jump over it)
+                    if self.deploy_config_field == 4 {
+                        self.deploy_config_field = 3;
+                    } else {
+                        self.deploy_config_field = self.deploy_config_field.saturating_sub(1);
+                    }
                 }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    if self.deploy_config_field < 2 {
+                KeyCode::Down | KeyCode::Char('j') if self.deploy_config_field != 4 => {
+                    let max_field = if self.deploy_password_enabled { 4 } else { 3 };
+                    if self.deploy_config_field < max_field {
                         self.deploy_config_field += 1;
                     }
                 }
-                KeyCode::Left | KeyCode::Char('h') => {
+                KeyCode::Left | KeyCode::Char('h') if self.deploy_config_field != 4 => {
                     match self.deploy_config_field {
                         0 => self.deploy_memory_idx = self.deploy_memory_idx.saturating_sub(1),
                         1 => self.deploy_cpu_idx = self.deploy_cpu_idx.saturating_sub(1),
@@ -1011,7 +1021,7 @@ impl App {
                         _ => {}
                     }
                 }
-                KeyCode::Right | KeyCode::Char('l') => {
+                KeyCode::Right | KeyCode::Char('l') if self.deploy_config_field != 4 => {
                     let max_mem = self.max_memory_idx();
                     let max_cpu = self.max_cpu_idx();
                     let max_disk = self.max_disk_size_idx();
@@ -1028,8 +1038,44 @@ impl App {
                         _ => {}
                     }
                 }
+                // Toggle password on field 3
+                KeyCode::Char(' ') if self.deploy_config_field == 3 => {
+                    self.deploy_password_enabled = !self.deploy_password_enabled;
+                    if !self.deploy_password_enabled {
+                        self.deploy_password.clear();
+                    }
+                }
+                KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l')
+                    if self.deploy_config_field == 3 => {
+                    self.deploy_password_enabled = !self.deploy_password_enabled;
+                    if !self.deploy_password_enabled {
+                        self.deploy_password.clear();
+                    }
+                }
+                // Password input field (field 4)
+                KeyCode::Backspace if self.deploy_config_field == 4 => {
+                    self.deploy_password.pop();
+                }
+                KeyCode::Char(c) if self.deploy_config_field == 4 => {
+                    self.deploy_password.push(c);
+                }
+                KeyCode::Up | KeyCode::Char('k') if self.deploy_config_field == 4 => {
+                    self.deploy_config_field = 3;
+                }
+                KeyCode::Enter if self.deploy_config_field == 4 => {
+                    if !self.deploy_password.is_empty() {
+                        self.overlay = Overlay::Deploy(DeployStep::Confirm);
+                    }
+                }
                 KeyCode::Enter => {
-                    self.overlay = Overlay::Deploy(DeployStep::Confirm);
+                    // If password enabled but empty, move to password field
+                    if self.deploy_password_enabled && self.deploy_password.is_empty() && self.deploy_config_field == 3 {
+                        self.deploy_config_field = 4;
+                    } else if self.deploy_password_enabled && self.deploy_password.is_empty() {
+                        self.deploy_config_field = 4;
+                    } else {
+                        self.overlay = Overlay::Deploy(DeployStep::Confirm);
+                    }
                 }
                 _ => {}
             },
@@ -1174,6 +1220,8 @@ impl App {
         self.deploy_cpu_idx = 1.min(max_cpu);     // 2 CPUs default
         self.deploy_disk_select_idx = 0;          // First disk
         self.deploy_disk_size_idx = 2;            // 50GB default (will be clamped)
+        self.deploy_password_enabled = false;
+        self.deploy_password.clear();
 
         self.overlay = Overlay::Deploy(DeployStep::SelectImage);
     }
@@ -1354,14 +1402,23 @@ impl App {
             .map(std::process::Stdio::from)
             .unwrap_or_else(std::process::Stdio::null);
 
+        // Build args
+        let mut args = vec![
+            "node".to_string(), "deploy".to_string(),
+            hostname.clone(), image_name,
+            "--memory".to_string(), memory.to_string(),
+            "--cpus".to_string(), cpus.to_string(),
+            "--disk".to_string(), disk.to_string(),
+        ];
+        if self.deploy_password_enabled && !self.deploy_password.is_empty() {
+            args.push("--password".to_string());
+            args.push(self.deploy_password.clone());
+        }
+
         // Spawn deploy command in background (non-blocking)
+        let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
         match Command::new("cave")
-            .args([
-                "node", "deploy", &hostname, &image_name,
-                "--memory", &memory.to_string(),
-                "--cpus", &cpus.to_string(),
-                "--disk", &disk.to_string(),
-            ])
+            .args(&args_ref)
             .stdin(std::process::Stdio::null())
             .stdout(stdout)
             .stderr(stderr)

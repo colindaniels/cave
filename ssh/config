@@ -13,9 +13,9 @@ Host mercury2
     IdentityFile /home/colindaniels/cave/ssh/cave
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
-# Cave managed node: mercury7
-Host mercury7
-    HostName 192.168.1.17
+# Cave managed node: mercury8
+Host mercury8
+    HostName 192.168.1.18
     User root
     IdentityFile /home/colindaniels/cave/ssh/cave
     StrictHostKeyChecking no
@@ -27,9 +27,9 @@ Host mercury5
     IdentityFile /home/colindaniels/cave/ssh/cave
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
-# Cave managed node: mercury8
-Host mercury8
-    HostName 192.168.1.18
+# Cave managed node: mercury7
+Host mercury7
+    HostName 192.168.1.17
     User root
     IdentityFile /home/colindaniels/cave/ssh/cave
     StrictHostKeyChecking no
@@ -62,16 +62,16 @@ Host mercury1
     IdentityFile /home/colindaniels/cave/ssh/cave
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
-# Cave managed node: mercury2-vm
-Host mercury2-vm
-    HostName 192.168.1.174
+# Cave managed node: platinum-vm
+Host platinum-vm
+    HostName 192.168.1.172
     User root
     IdentityFile /home/colindaniels/cave/ssh/cave
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
-# Cave managed node: platinum-vm
-Host platinum-vm
-    HostName 192.168.1.172
+# Cave managed node: mercury2-vm
+Host mercury2-vm
+    HostName 192.168.1.176
     User root
     IdentityFile /home/colindaniels/cave/ssh/cave
     StrictHostKeyChecking no

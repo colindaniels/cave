@@ -19,6 +19,7 @@ pub async fn run(
     memory_opt: Option<u32>,
     cpus_opt: Option<u32>,
     disk_opt: Option<u64>,
+    password_opt: Option<String>,
 ) -> Result<()> {
     let config = Config::load()?;
     let theme = ColorfulTheme::default();
@@ -314,7 +315,7 @@ pub async fn run(
 
     // Check if this is a cloud image that needs cloud-init
     let seed_iso_path = if needs_cloud_init(&image_path) {
-        Some(create_cloud_init_iso(&vm_name, &theme, non_interactive)?)
+        Some(create_cloud_init_iso(&vm_name, &theme, non_interactive, password_opt.as_deref())?)
     } else {
         None
     };
@@ -557,10 +558,13 @@ fn needs_cloud_init(image_path: &std::path::Path) -> bool {
                 || filename.contains("fedora")))
 }
 
-fn create_cloud_init_iso(hostname: &str, theme: &ColorfulTheme, non_interactive: bool) -> Result<PathBuf> {
-    // In non-interactive mode, use defaults (password login enabled with "cave" password)
-    let (enable_password, root_password) = if non_interactive {
-        (true, "cave".to_string())
+fn create_cloud_init_iso(hostname: &str, theme: &ColorfulTheme, non_interactive: bool, password_arg: Option<&str>) -> Result<PathBuf> {
+    // If password explicitly provided via CLI, use it
+    // If non-interactive with no password arg, disable password auth
+    let (enable_password, root_password) = if let Some(pw) = password_arg {
+        (true, pw.to_string())
+    } else if non_interactive {
+        (false, String::new())
     } else {
         println!();
         ui::print_header("Cloud-Init Configuration");
@@ -621,6 +625,11 @@ fn create_cloud_init_iso(hostname: &str, theme: &ColorfulTheme, non_interactive:
     }
 
     user_data.push_str("runcmd:\n");
+    // Allow root login with password if enabled
+    if enable_password {
+        user_data.push_str("  - sed -i 's/^#\\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config\n");
+        user_data.push_str("  - systemctl restart sshd 2>/dev/null || service sshd restart 2>/dev/null || true\n");
+    }
     user_data.push_str("  - touch /etc/cloud/cloud-init.disabled\n");
 
     fs::write(&user_data_path, &user_data)?;

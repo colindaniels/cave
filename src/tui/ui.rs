@@ -740,13 +740,16 @@ fn draw_deploy_overlay(f: &mut Frame, app: &App, step: DeployStep) {
 
         DeployStep::Configure => {
             let disk_label = app.selected_disk_size_label();
+            let pw_toggle = if app.deploy_password_enabled { "Yes" } else { "No" };
+
+            let mut lines = vec![Line::from("")];
+
+            // Memory, CPU, Disk fields (0-2)
             let fields: [(&str, &str, bool); 3] = [
                 ("Memory", MEMORY_OPTIONS[app.deploy_memory_idx].1, app.deploy_config_field == 0),
                 ("CPUs", CPU_OPTIONS[app.deploy_cpu_idx].1, app.deploy_config_field == 1),
                 ("Disk", &disk_label, app.deploy_config_field == 2),
             ];
-
-            let mut lines = vec![Line::from("")];
             for (label, value, selected) in fields {
                 let style = if selected {
                     Style::default().fg(MAUVE).add_modifier(Modifier::BOLD)
@@ -761,6 +764,44 @@ fn draw_deploy_overlay(f: &mut Frame, app: &App, step: DeployStep) {
                 ]));
                 lines.push(Line::from(""));
             }
+
+            // Password toggle (field 3)
+            let pw_selected = app.deploy_config_field == 3;
+            let pw_style = if pw_selected {
+                Style::default().fg(MAUVE).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(TEXT)
+            };
+            let pw_arrow = if pw_selected { " > " } else { "   " };
+            lines.push(Line::from(vec![
+                Span::styled(pw_arrow, Style::default().fg(MAUVE)),
+                Span::styled("Password  ", Style::default().fg(SUBTEXT)),
+                Span::styled(format!(" < {} >", pw_toggle), pw_style),
+            ]));
+            lines.push(Line::from(""));
+
+            // Password input (field 4, only if enabled)
+            if app.deploy_password_enabled {
+                let input_selected = app.deploy_config_field == 4;
+                let input_style = if input_selected {
+                    Style::default().fg(MAUVE).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(TEXT)
+                };
+                let input_arrow = if input_selected { " > " } else { "   " };
+                let display_pw = if app.deploy_password.is_empty() {
+                    "type password...".to_string()
+                } else {
+                    app.deploy_password.clone()
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(input_arrow, Style::default().fg(MAUVE)),
+                    Span::styled("          ", Style::default().fg(SUBTEXT)),
+                    Span::styled(format!(" [{}]", display_pw), input_style),
+                ]));
+                lines.push(Line::from(""));
+            }
+
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled("Use arrow keys to adjust, Enter to continue", Style::default().fg(SUBTEXT))));
 
@@ -802,7 +843,13 @@ fn draw_deploy_overlay(f: &mut Frame, app: &App, step: DeployStep) {
                     Span::styled("  Disk:   ", Style::default().fg(SUBTEXT)),
                     Span::styled(disk_label, Style::default().fg(TEXT)),
                 ]),
-                Line::from(""),
+                Line::from(vec![
+                    Span::styled("  SSH pw: ", Style::default().fg(SUBTEXT)),
+                    Span::styled(
+                        if app.deploy_password_enabled { "Enabled" } else { "Disabled" },
+                        Style::default().fg(if app.deploy_password_enabled { GREEN } else { SUBTEXT }),
+                    ),
+                ]),
                 Line::from(""),
                 Line::from(vec![
                     Span::styled("[y/Enter]", Style::default().fg(GREEN)),

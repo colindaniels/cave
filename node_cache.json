@@ -8,7 +8,7 @@
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 177,
+    "ram_used_mb": 174,
     "disks": [
       {
         "name": "sda",
@@ -34,7 +34,7 @@
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 1152,
+    "ram_used_mb": 1108,
     "disks": [
       {
         "name": "nvme0n1",
@@ -45,9 +45,9 @@
     ],
     "vm": {
       "name": "mercury2-vm",
-      "ip": "192.168.1.174",
+      "ip": "192.168.1.176",
       "memory": "4096M",
-      "memory_used_mb": 387,
+      "memory_used_mb": 373,
       "cpus": "4"
     }
   },
@@ -60,7 +60,7 @@
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 166,
+    "ram_used_mb": 165,
     "disks": [
       {
         "name": "nvme0n1",
@@ -80,7 +80,7 @@
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 166,
+    "ram_used_mb": 165,
     "disks": [
       {
         "name": "nvme0n1",
@@ -100,7 +100,7 @@
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 164,
+    "ram_used_mb": 165,
     "disks": [
       {
         "name": "nvme0n1",
@@ -120,7 +120,7 @@
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 116,
+    "ram_used_mb": 118,
     "disks": [
       {
         "name": "nvme0n1",
@@ -140,7 +140,7 @@
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 165,
+    "ram_used_mb": 162,
     "disks": [
       {
         "name": "nvme0n1",
@@ -160,7 +160,7 @@
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 164,
+    "ram_used_mb": 162,
     "disks": [
       {
         "name": "nvme0n1",
@@ -206,7 +206,7 @@
     "cores": "22 cores",
     "ram": "62.5G",
     "ram_total_mb": 63978,
-    "ram_used_mb": 2493,
+    "ram_used_mb": 2487,
     "disks": [
       {
         "name": "nvme0n1",
@@ -219,7 +219,7 @@
       "name": "platinum-vm",
       "ip": "192.168.1.172",
       "memory": "49152M",
-      "memory_used_mb": 752,
+      "memory_used_mb": 747,
       "cpus": "16"
     }
   }
