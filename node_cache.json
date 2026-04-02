@@ -3,12 +3,12 @@
     "hostname": "mercury1",
     "mac": "7c:83:34:bb:91:e2",
     "ip": "192.168.1.11",
-    "status": "active",
+    "status": "standby",
     "cpu": "Intel(R) N95",
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 926,
+    "ram_used_mb": 177,
     "disks": [
       {
         "name": "sda",
@@ -23,24 +23,18 @@
         "model": "Timetec 35TTFP6PCIE-256G"
       }
     ],
-    "vm": {
-      "name": "mercury1-vm",
-      "ip": "192.168.1.180",
-      "memory": "4096M",
-      "memory_used_mb": 372,
-      "cpus": "2"
-    }
+    "vm": null
   },
   {
     "hostname": "mercury2",
     "mac": "7c:83:34:bb:93:a9",
     "ip": "192.168.1.12",
-    "status": "standby",
+    "status": "active",
     "cpu": "Intel(R) N95",
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 117,
+    "ram_used_mb": 1152,
     "disks": [
       {
         "name": "nvme0n1",
@@ -49,7 +43,13 @@
         "model": "256GB SSD"
       }
     ],
-    "vm": null
+    "vm": {
+      "name": "mercury2-vm",
+      "ip": "192.168.1.174",
+      "memory": "4096M",
+      "memory_used_mb": 387,
+      "cpus": "4"
+    }
   },
   {
     "hostname": "mercury3",
@@ -60,7 +60,7 @@
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 169,
+    "ram_used_mb": 166,
     "disks": [
       {
         "name": "nvme0n1",
@@ -80,7 +80,7 @@
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 163,
+    "ram_used_mb": 166,
     "disks": [
       {
         "name": "nvme0n1",
@@ -120,7 +120,7 @@
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 118,
+    "ram_used_mb": 116,
     "disks": [
       {
         "name": "nvme0n1",
@@ -140,7 +140,7 @@
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 162,
+    "ram_used_mb": 165,
     "disks": [
       {
         "name": "nvme0n1",
@@ -160,7 +160,7 @@
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 162,
+    "ram_used_mb": 164,
     "disks": [
       {
         "name": "nvme0n1",
@@ -206,7 +206,7 @@
     "cores": "22 cores",
     "ram": "62.5G",
     "ram_total_mb": 63978,
-    "ram_used_mb": 2435,
+    "ram_used_mb": 2493,
     "disks": [
       {
         "name": "nvme0n1",
@@ -217,9 +217,9 @@
     ],
     "vm": {
       "name": "platinum-vm",
-      "ip": "192.168.1.171",
+      "ip": "192.168.1.172",
       "memory": "49152M",
-      "memory_used_mb": 776,
+      "memory_used_mb": 752,
       "cpus": "16"
     }
   }

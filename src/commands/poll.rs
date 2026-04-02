@@ -63,6 +63,13 @@ pub async fn run() -> Result<()> {
                     None
                 };
 
+                // Update SSH config for VM if it has an IP
+                if let Some(ref vm) = vm_info {
+                    if !vm.ip.is_empty() {
+                        let _ = ssh::update_ssh_config(&vm.name, &vm.ip);
+                    }
+                }
+
                 CachedNode {
                     hostname: node.hostname.clone(),
                     mac: node.mac.clone(),

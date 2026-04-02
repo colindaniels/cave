@@ -10,7 +10,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use crate::commands::images::{CloudImage, CLOUD_IMAGES};
-use crate::config::{load_discovered_cache, load_node_cache, save_node_cache, CachedNode, Config};
+use crate::config::{load_discovered_cache, load_node_cache, save_node_cache, CachedNode, CachedVm, Config};
 
 use super::ui;
 
@@ -79,6 +79,7 @@ pub const DISK_OPTIONS: &[(u64, &str)] = &[
 ];
 
 pub const NODE_ACTIONS: &[&str] = &[
+    "Launch SSH",
     "Deploy VM",
     "Destroy VM",
     "Wake (WoL)",
@@ -87,13 +88,30 @@ pub const NODE_ACTIONS: &[&str] = &[
     "Remove Node",
 ];
 
+pub const VM_ACTIONS: &[&str] = &[
+    "Launch SSH",
+    "Destroy",
+];
+
 pub const DISCOVERED_NODE_ACTIONS: &[&str] = &[
+    "Launch SSH",
     "Initialize",
     "Destroy VM",
     "Wake (WoL)",
     "Shutdown",
     "Restart",
 ];
+
+// ============================================================================
+// Selection Model
+// ============================================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SelectableItem {
+    Node(usize),           // index into app.nodes
+    Vm(usize),             // index into app.nodes (parent node that owns this VM)
+    DiscoveredNode(usize), // index into app.discovered_nodes
+}
 
 // ============================================================================
 // App State
@@ -133,6 +151,7 @@ pub struct App {
     pub destroy_wait_start: Option<Instant>,
     pub destroy_last_poll: Option<Instant>,
     pub pending_action: Option<String>, // Pending node action (destroy, wake, etc.)
+    pub pending_ssh: Option<String>,    // IP to SSH into (handled in main loop)
     pub deploy_handle: Option<std::process::Child>, // Running deploy command
 
     // Discovered (uninitialized) nodes from PXE boot (hostname is empty)
@@ -193,6 +212,7 @@ impl App {
             deploy_wait_start: None,
             deploy_last_poll: None,
             discovered_nodes: load_discovered_cache(),
+            pending_ssh: None,
             deploy_handle: None,
             destroy_waiting: false,
             destroy_target: None,
@@ -339,14 +359,50 @@ impl App {
         self.last_refresh = Instant::now();
 
         // Clamp selection
-        let total = self.nodes.len() + self.discovered_nodes.len();
+        let total = self.selectable_items().len();
         if total > 0 && self.selected_node_idx >= total {
             self.selected_node_idx = total - 1;
         }
     }
 
+    /// Compute the flat list of selectable items (nodes, their VMs, discovered nodes)
+    pub fn selectable_items(&self) -> Vec<SelectableItem> {
+        let mut items = Vec::new();
+        for i in 0..self.nodes.len() {
+            items.push(SelectableItem::Node(i));
+            if self.nodes[i].vm.is_some() {
+                items.push(SelectableItem::Vm(i));
+            }
+        }
+        for i in 0..self.discovered_nodes.len() {
+            items.push(SelectableItem::DiscoveredNode(i));
+        }
+        items
+    }
+
+    /// Get the currently selected item type
+    pub fn selected_item(&self) -> Option<SelectableItem> {
+        self.selectable_items().get(self.selected_node_idx).cloned()
+    }
+
+    /// Get the selected node (or parent node if VM is selected)
     pub fn selected_node(&self) -> Option<&CachedNode> {
-        self.nodes.get(self.selected_node_idx)
+        match self.selected_item()? {
+            SelectableItem::Node(i) | SelectableItem::Vm(i) => self.nodes.get(i),
+            SelectableItem::DiscoveredNode(i) => self.discovered_nodes.get(i),
+        }
+    }
+
+    /// Get the selected VM (only if a VM is selected)
+    pub fn selected_vm(&self) -> Option<&CachedVm> {
+        match self.selected_item()? {
+            SelectableItem::Vm(i) => self.nodes.get(i)?.vm.as_ref(),
+            _ => None,
+        }
+    }
+
+    pub fn is_selected_vm(&self) -> bool {
+        matches!(self.selected_item(), Some(SelectableItem::Vm(_)))
     }
 
     pub fn filtered_images(&self) -> Vec<&(String, u64)> {
@@ -683,13 +739,13 @@ impl App {
 
             // Navigation
             KeyCode::Char('j') | KeyCode::Down => {
-                let total = self.nodes.len() + self.discovered_nodes.len();
+                let total = self.selectable_items().len();
                 if total > 0 {
                     self.selected_node_idx = (self.selected_node_idx + 1) % total;
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                let total = self.nodes.len() + self.discovered_nodes.len();
+                let total = self.selectable_items().len();
                 if total > 0 {
                     self.selected_node_idx = self.selected_node_idx
                         .checked_sub(1)
@@ -699,7 +755,7 @@ impl App {
 
             // Open action menu for selected node
             KeyCode::Enter => {
-                let total = self.nodes.len() + self.discovered_nodes.len();
+                let total = self.selectable_items().len();
                 if self.selected_node_idx < total {
                     self.selected_action_idx = 0;
                     self.overlay = Overlay::NodeActions;
@@ -734,20 +790,21 @@ impl App {
 
     /// Whether the currently selected node is a discovered (uninitialized) node
     pub fn is_selected_discovered(&self) -> bool {
-        self.selected_node_idx >= self.nodes.len()
+        matches!(self.selected_item(), Some(SelectableItem::DiscoveredNode(_)))
     }
 
     /// Get the currently selected discovered node
     pub fn selected_discovered(&self) -> Option<&CachedNode> {
-        if self.is_selected_discovered() {
-            self.discovered_nodes.get(self.selected_node_idx - self.nodes.len())
-        } else {
-            None
+        match self.selected_item()? {
+            SelectableItem::DiscoveredNode(i) => self.discovered_nodes.get(i),
+            _ => None,
         }
     }
 
     fn handle_node_actions_keys(&mut self, code: KeyCode) {
-        let actions = if self.is_selected_discovered() {
+        let actions: &[&str] = if self.is_selected_vm() {
+            VM_ACTIONS
+        } else if self.is_selected_discovered() {
             DISCOVERED_NODE_ACTIONS
         } else {
             NODE_ACTIONS
@@ -770,11 +827,42 @@ impl App {
     }
 
     fn execute_selected_action(&mut self) {
-        if self.is_selected_discovered() {
-            // Discovered node actions: Initialize, Destroy, Wake, Shutdown, Restart
+        if self.is_selected_vm() {
+            // VM actions: Launch SSH, Destroy
             match self.selected_action_idx {
                 0 => {
-                    // Initialize - open init form with MAC pre-filled
+                    // Launch SSH to VM
+                    if let Some(vm) = self.selected_vm() {
+                        if !vm.ip.is_empty() {
+                            self.pending_ssh = Some(vm.ip.clone());
+                            self.overlay = Overlay::None;
+                        } else {
+                            self.set_status("VM has no IP address yet");
+                            self.overlay = Overlay::None;
+                        }
+                    }
+                }
+                1 => {
+                    // Destroy this VM
+                    self.pending_action = Some("destroy".to_string());
+                    self.overlay = Overlay::ActionProgress("Destroying VM...".to_string());
+                }
+                _ => {}
+            }
+        } else if self.is_selected_discovered() {
+            // Discovered: Launch SSH, Initialize, Destroy, Wake, Shutdown, Restart
+            match self.selected_action_idx {
+                0 => {
+                    // Launch SSH
+                    if let Some(disc) = self.selected_discovered() {
+                        if let Some(ref ip) = disc.ip {
+                            self.pending_ssh = Some(ip.clone());
+                            self.overlay = Overlay::None;
+                        }
+                    }
+                }
+                1 => {
+                    // Initialize
                     if let Some(disc) = self.selected_discovered().cloned() {
                         self.node_init_hostname.clear();
                         self.node_init_mac = disc.mac.clone();
@@ -782,54 +870,66 @@ impl App {
                         self.overlay = Overlay::NodeInit;
                     }
                 }
-                1 => {
+                2 => {
                     self.pending_action = Some("destroy".to_string());
                     self.overlay = Overlay::ActionProgress("Destroying VM...".to_string());
                 }
-                2 => {
+                3 => {
                     self.pending_action = Some("wake".to_string());
                     self.overlay = Overlay::ActionProgress("Waking node...".to_string());
                 }
-                3 => {
+                4 => {
                     self.pending_action = Some("shutdown".to_string());
                     self.overlay = Overlay::ActionProgress("Shutting down...".to_string());
                 }
-                4 => {
+                5 => {
                     self.pending_action = Some("restart".to_string());
                     self.overlay = Overlay::ActionProgress("Restarting...".to_string());
                 }
                 _ => {}
             }
         } else {
-            // Registered node actions
+            // Registered node: Launch SSH, Deploy, Destroy, Wake, Shutdown, Restart, Remove
             match self.selected_action_idx {
                 0 => {
+                    // Launch SSH to host
+                    if let Some(node) = self.selected_node() {
+                        if let Some(ref ip) = node.ip {
+                            self.pending_ssh = Some(ip.clone());
+                            self.overlay = Overlay::None;
+                        } else {
+                            self.set_status("Node has no IP address");
+                            self.overlay = Overlay::None;
+                        }
+                    }
+                }
+                1 => {
                     // Deploy VM
                     self.overlay = Overlay::None;
                     self.start_deploy();
                 }
-                1 => {
+                2 => {
                     // Destroy VM
                     self.pending_action = Some("destroy".to_string());
                     self.overlay = Overlay::ActionProgress("Destroying VM...".to_string());
                 }
-                2 => {
+                3 => {
                     // Wake (WoL)
                     self.pending_action = Some("wake".to_string());
                     self.overlay = Overlay::ActionProgress("Waking node...".to_string());
                 }
-                3 => {
+                4 => {
                     // Shutdown
                     self.pending_action = Some("shutdown".to_string());
                     self.overlay = Overlay::ActionProgress("Shutting down...".to_string());
                 }
-                4 => {
+                5 => {
                     // Restart
                     self.pending_action = Some("restart".to_string());
                     self.overlay = Overlay::ActionProgress("Restarting...".to_string());
                 }
-                5 => {
-                    // Remove Node - show confirmation first
+                6 => {
+                    // Remove Node
                     self.overlay = Overlay::ConfirmRemove;
                 }
                 _ => {}
@@ -1451,6 +1551,30 @@ pub fn run() -> Result<()> {
             app.deploy_pending = false;
             app.execute_deploy();
             continue; // Redraw immediately after deploy
+        }
+
+        // Check for pending SSH (leave TUI, run interactive SSH, return)
+        if let Some(ip) = app.pending_ssh.take() {
+            // Leave alternate screen
+            disable_raw_mode()?;
+            execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+            terminal.show_cursor()?;
+
+            // Run SSH interactively
+            let key_path = Config::ssh_private_key();
+            let _ = Command::new("ssh")
+                .args([
+                    "-i", &key_path.to_string_lossy(),
+                    "-o", "StrictHostKeyChecking=no",
+                    &format!("root@{}", ip),
+                ])
+                .status();
+
+            // Re-enter alternate screen
+            enable_raw_mode()?;
+            execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
+            terminal.clear()?;
+            continue;
         }
 
         // Check for pending node action (runs after UI draws progress)

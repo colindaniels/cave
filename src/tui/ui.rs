@@ -7,7 +7,8 @@ use ratatui::{
 };
 
 use super::app::{
-    App, DeployStep, Overlay, CPU_OPTIONS, DISCOVERED_NODE_ACTIONS, MEMORY_OPTIONS, NODE_ACTIONS,
+    App, DeployStep, Overlay, SelectableItem,
+    CPU_OPTIONS, DISCOVERED_NODE_ACTIONS, MEMORY_OPTIONS, NODE_ACTIONS, VM_ACTIONS,
 };
 use super::widgets::logo::LOGO;
 use crate::commands::images::CLOUD_IMAGES;
@@ -229,8 +230,8 @@ fn draw_node_list(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let total = app.nodes.len() + app.discovered_nodes.len();
-    if total == 0 {
+    let sel_items = app.selectable_items();
+    if sel_items.is_empty() {
         let empty = Paragraph::new(vec![
             Line::from(""),
             Line::from(Span::styled("No nodes", Style::default().fg(SUBTEXT))),
@@ -242,68 +243,68 @@ fn draw_node_list(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let mut items: Vec<ListItem> = app
-        .nodes
+    let items: Vec<ListItem> = sel_items
         .iter()
         .enumerate()
-        .map(|(i, node)| {
-            let (indicator, color) = if node.vm.is_some() {
-                ("●", GREEN)  // Green: VM running
-            } else if node.status == "active" || node.status == "standby" {
-                ("●", YELLOW) // Yellow: online/standby but no VM
-            } else {
-                ("●", RED)    // Red: offline
-            };
-
-            let style = if i == app.selected_node_idx {
-                Style::default().fg(TEXT).bg(SURFACE0).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(TEXT)
-            };
-
-            let mut lines = vec![
-                Line::from(vec![
-                    Span::styled(format!(" {} ", indicator), Style::default().fg(color)),
-                    Span::styled(&node.hostname, style),
-                ]),
-            ];
-
-            // Add VM name indented below if present
-            if let Some(ref vm) = node.vm {
-                lines.push(Line::from(vec![
-                    Span::styled("   └─ ", Style::default().fg(SURFACE1)),
-                    Span::styled(&vm.name, Style::default().fg(MAUVE)),
-                ]));
+        .map(|(flat_idx, sel_item)| {
+            let is_selected = flat_idx == app.selected_node_idx;
+            match sel_item {
+                SelectableItem::Node(ni) => {
+                    let node = &app.nodes[*ni];
+                    let (indicator, color) = if node.vm.is_some() {
+                        ("●", GREEN)
+                    } else if node.status == "active" || node.status == "standby" {
+                        ("●", YELLOW)
+                    } else {
+                        ("●", RED)
+                    };
+                    let style = if is_selected {
+                        Style::default().fg(TEXT).bg(SURFACE0).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(TEXT)
+                    };
+                    ListItem::new(Line::from(vec![
+                        Span::styled(format!(" {} ", indicator), Style::default().fg(color)),
+                        Span::styled(&node.hostname, style),
+                    ])).style(style)
+                }
+                SelectableItem::Vm(ni) => {
+                    let node = &app.nodes[*ni];
+                    let vm = node.vm.as_ref().unwrap();
+                    let style = if is_selected {
+                        Style::default().fg(MAUVE).bg(SURFACE0).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(MAUVE)
+                    };
+                    ListItem::new(Line::from(vec![
+                        Span::styled("   └─ ", Style::default().fg(SURFACE1)),
+                        Span::styled(&vm.name, style),
+                    ])).style(style)
+                }
+                SelectableItem::DiscoveredNode(di) => {
+                    let disc = &app.discovered_nodes[*di];
+                    let style = if is_selected {
+                        Style::default().fg(TEXT).bg(SURFACE0).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(SUBTEXT)
+                    };
+                    ListItem::new(Line::from(vec![
+                        Span::styled(" ○ ", Style::default().fg(BLUE)),
+                        Span::styled(&disc.mac, style),
+                    ])).style(style)
+                }
             }
-
-            ListItem::new(lines).style(style)
         })
         .collect();
-
-    // Append discovered (uninitialized) nodes
-    for (i, disc) in app.discovered_nodes.iter().enumerate() {
-        let idx = app.nodes.len() + i;
-        let style = if idx == app.selected_node_idx {
-            Style::default().fg(TEXT).bg(SURFACE0).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(SUBTEXT)
-        };
-
-        items.push(ListItem::new(vec![
-            Line::from(vec![
-                Span::styled(" ○ ", Style::default().fg(BLUE)),
-                Span::styled(&disc.mac, style),
-            ]),
-        ]).style(style));
-    }
 
     let list = List::new(items);
     f.render_widget(list, inner);
 }
 
 fn draw_node_details(f: &mut Frame, app: &App, area: Rect) {
+    let title = if app.is_selected_vm() { " VM Details " } else { " Node Details " };
     let block = Block::default()
-        .title(" Node Details ")
+        .title(title)
         .title_style(Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -313,14 +314,70 @@ fn draw_node_details(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // Get selected node - could be registered or discovered
-    let node = if app.selected_node_idx < app.nodes.len() {
-        app.selected_node()
-    } else {
-        app.selected_discovered()
-    };
+    // If a VM is selected, show VM-focused details
+    if let Some(vm) = app.selected_vm() {
+        let parent_node = app.selected_node();
+        let host_name = parent_node.map(|n| n.hostname.as_str()).unwrap_or("-");
 
-    let Some(node) = node else {
+        let (vm_status_color, vm_status_text) = if vm.ip.is_empty() {
+            (YELLOW, "Starting")
+        } else {
+            (GREEN, "Online")
+        };
+
+        let vm_ip_display = if vm.ip.is_empty() { "-" } else { &vm.ip };
+
+        let info_lines = vec![
+            Line::from(vec![
+                Span::styled("  ── VM ──", Style::default().fg(MAUVE).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from(vec![
+                Span::styled("  Name     ", Style::default().fg(SUBTEXT)),
+                Span::styled(&vm.name, Style::default().fg(TEXT).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from(vec![
+                Span::styled("  Status   ", Style::default().fg(SUBTEXT)),
+                Span::styled("● ", Style::default().fg(vm_status_color)),
+                Span::styled(vm_status_text, Style::default().fg(TEXT)),
+            ]),
+            Line::from(vec![
+                Span::styled("  IP       ", Style::default().fg(SUBTEXT)),
+                Span::styled(vm_ip_display, Style::default().fg(TEXT)),
+            ]),
+            Line::from(vec![
+                Span::styled("  Memory   ", Style::default().fg(SUBTEXT)),
+                Span::styled(&vm.memory, Style::default().fg(TEXT)),
+            ]),
+            Line::from(vec![
+                Span::styled("  CPUs     ", Style::default().fg(SUBTEXT)),
+                Span::styled(&vm.cpus, Style::default().fg(TEXT)),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("  Host     ", Style::default().fg(SUBTEXT)),
+                Span::styled(host_name, Style::default().fg(LAVENDER)),
+            ]),
+        ];
+
+        let detail_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(8), Constraint::Length(5)])
+            .split(inner);
+
+        let info_para = Paragraph::new(info_lines);
+        f.render_widget(info_para, detail_chunks[0]);
+
+        let hint = Line::from(vec![
+            Span::styled("Press ", Style::default().fg(SUBTEXT)),
+            Span::styled("Enter", Style::default().fg(BLUE).add_modifier(Modifier::BOLD)),
+            Span::styled(" for actions", Style::default().fg(SUBTEXT)),
+        ]);
+        let actions_para = Paragraph::new(vec![Line::from(""), hint]).alignment(Alignment::Center);
+        f.render_widget(actions_para, detail_chunks[1]);
+        return;
+    }
+
+    let Some(node) = app.selected_node() else {
         let empty = Paragraph::new("Select a node")
             .style(Style::default().fg(SUBTEXT))
             .alignment(Alignment::Center);
@@ -510,12 +567,14 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 }
 
 fn draw_node_actions_overlay(f: &mut Frame, app: &App) {
-    let area = centered_rect(40, 12, f.area());
-    f.render_widget(Clear, area);
-
-    let (node_name, actions) = if app.is_selected_discovered() {
+    let (title_name, actions): (&str, &[&str]) = if app.is_selected_vm() {
+        let name = app.selected_vm()
+            .map(|v| v.name.as_str())
+            .unwrap_or("VM");
+        (name, VM_ACTIONS)
+    } else if app.is_selected_discovered() {
         let name = app.selected_discovered()
-            .map(|n| n.mac.as_str())
+            .and_then(|n| n.ip.as_deref())
             .unwrap_or("Unknown");
         (name, DISCOVERED_NODE_ACTIONS)
     } else {
@@ -525,8 +584,12 @@ fn draw_node_actions_overlay(f: &mut Frame, app: &App) {
         (name, NODE_ACTIONS)
     };
 
+    let overlay_height = (actions.len() as u16) + 4;
+    let area = centered_rect(40, overlay_height, f.area());
+    f.render_widget(Clear, area);
+
     let block = Block::default()
-        .title(format!(" {} ", node_name))
+        .title(format!(" {} ", title_name))
         .title_style(Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)

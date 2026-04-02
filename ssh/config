@@ -13,20 +13,6 @@ Host mercury2
     IdentityFile /home/colindaniels/cave/ssh/cave
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
-# Cave managed node: mercury8
-Host mercury8
-    HostName 192.168.1.18
-    User root
-    IdentityFile /home/colindaniels/cave/ssh/cave
-    StrictHostKeyChecking no
-    UserKnownHostsFile /dev/null
-# Cave managed node: mercury3
-Host mercury3
-    HostName 192.168.1.13
-    User root
-    IdentityFile /home/colindaniels/cave/ssh/cave
-    StrictHostKeyChecking no
-    UserKnownHostsFile /dev/null
 # Cave managed node: mercury7
 Host mercury7
     HostName 192.168.1.17
@@ -41,9 +27,16 @@ Host mercury5
     IdentityFile /home/colindaniels/cave/ssh/cave
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
-# Cave managed node: mercury4
-Host mercury4
-    HostName 192.168.1.14
+# Cave managed node: mercury8
+Host mercury8
+    HostName 192.168.1.18
+    User root
+    IdentityFile /home/colindaniels/cave/ssh/cave
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+# Cave managed node: mercury3
+Host mercury3
+    HostName 192.168.1.13
     User root
     IdentityFile /home/colindaniels/cave/ssh/cave
     StrictHostKeyChecking no
@@ -55,9 +48,30 @@ Host mercury6
     IdentityFile /home/colindaniels/cave/ssh/cave
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
+# Cave managed node: mercury4
+Host mercury4
+    HostName 192.168.1.14
+    User root
+    IdentityFile /home/colindaniels/cave/ssh/cave
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
 # Cave managed node: mercury1
 Host mercury1
     HostName 192.168.1.11
+    User root
+    IdentityFile /home/colindaniels/cave/ssh/cave
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+# Cave managed node: mercury2-vm
+Host mercury2-vm
+    HostName 192.168.1.174
+    User root
+    IdentityFile /home/colindaniels/cave/ssh/cave
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+# Cave managed node: platinum-vm
+Host platinum-vm
+    HostName 192.168.1.172
     User root
     IdentityFile /home/colindaniels/cave/ssh/cave
     StrictHostKeyChecking no
