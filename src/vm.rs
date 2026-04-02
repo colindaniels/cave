@@ -132,6 +132,9 @@ pub fn setup_hypervisor(ssh: &SshConnection) -> Result<()> {
     // Set up bridged networking
     setup_bridge(ssh)?;
 
+    // Block VMs from SSHing into the host
+    setup_vm_firewall(ssh)?;
+
     // Set up VM auto-start service
     setup_autostart(ssh)?;
 
@@ -238,6 +241,93 @@ depend() {
 
     // Enable the service
     let _ = ssh.execute("rc-update add cave-vms default 2>/dev/null || true");
+
+    Ok(())
+}
+
+/// Isolate VMs - block all traffic to host and LAN, allow only internet
+fn setup_vm_firewall(ssh: &SshConnection) -> Result<()> {
+    // Install iptables if not present
+    let _ = ssh.execute("which iptables >/dev/null 2>&1 || apk add --no-cache iptables >/dev/null 2>&1");
+
+    // Check if our rules are already set up (use a marker rule comment via chain)
+    let (_, status) = ssh.execute_with_status(
+        "iptables -L CAVE_VM_ISOLATION -n >/dev/null 2>&1"
+    )?;
+
+    if status != 0 {
+        // Create a custom chain for VM isolation rules
+        let _ = ssh.execute("iptables -N CAVE_VM_ISOLATION 2>/dev/null");
+
+        // Get the local subnet (e.g. 192.168.1.0/24)
+        let (subnet_output, _) = ssh.execute_with_status(
+            "ip -4 addr show br0 | grep inet | awk '{print $2}' | head -1"
+        )?;
+        let host_cidr = subnet_output.trim();
+
+        if !host_cidr.is_empty() {
+            // Derive subnet from host IP (e.g. 192.168.1.5/24 -> 192.168.1.0/24)
+            let subnet = if let Some(prefix) = host_cidr.rfind('.') {
+                let base = &host_cidr[..prefix];
+                if let Some(slash) = host_cidr.find('/') {
+                    format!("{}.0{}", base, &host_cidr[slash..])
+                } else {
+                    format!("{}.0/24", base)
+                }
+            } else {
+                "192.168.0.0/16".to_string()
+            };
+
+            // Rules in the custom chain:
+            // 1. Allow established/related connections (so VM can receive responses)
+            let _ = ssh.execute(
+                "iptables -A CAVE_VM_ISOLATION -m state --state ESTABLISHED,RELATED -j ACCEPT"
+            );
+            // 2. Allow DNS (needed for internet to work)
+            let _ = ssh.execute(
+                "iptables -A CAVE_VM_ISOLATION -p udp --dport 53 -j ACCEPT"
+            );
+            let _ = ssh.execute(
+                "iptables -A CAVE_VM_ISOLATION -p tcp --dport 53 -j ACCEPT"
+            );
+            // 3. Allow DHCP (so VM can get an IP)
+            let _ = ssh.execute(
+                "iptables -A CAVE_VM_ISOLATION -p udp --dport 67:68 -j ACCEPT"
+            );
+            // 4. Block all traffic to the LAN subnet
+            let _ = ssh.execute(&format!(
+                "iptables -A CAVE_VM_ISOLATION -d {} -j DROP", subnet
+            ));
+            // 5. Block common private ranges too (in case of multiple subnets)
+            let _ = ssh.execute(
+                "iptables -A CAVE_VM_ISOLATION -d 10.0.0.0/8 -j DROP"
+            );
+            let _ = ssh.execute(
+                "iptables -A CAVE_VM_ISOLATION -d 172.16.0.0/12 -j DROP"
+            );
+            let _ = ssh.execute(
+                "iptables -A CAVE_VM_ISOLATION -d 192.168.0.0/16 -j DROP"
+            );
+            // 6. Allow everything else (internet)
+            let _ = ssh.execute(
+                "iptables -A CAVE_VM_ISOLATION -j ACCEPT"
+            );
+
+            // Jump to our chain for all forwarded traffic from VM tap devices
+            let _ = ssh.execute(
+                "iptables -I FORWARD -m physdev --physdev-in tap+ -j CAVE_VM_ISOLATION"
+            );
+
+            // Block VMs from initiating connections to the host (but allow replies to inbound SSH etc)
+            let _ = ssh.execute(
+                "iptables -I INPUT -m physdev --physdev-in tap+ -m state ! --state ESTABLISHED,RELATED -j DROP"
+            );
+        }
+
+        println!("  VM network isolation configured");
+    } else {
+        println!("  VM firewall already configured");
+    }
 
     Ok(())
 }

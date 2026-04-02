@@ -628,7 +628,9 @@ fn create_cloud_init_iso(hostname: &str, theme: &ColorfulTheme, non_interactive:
     // Allow root login with password if enabled
     if enable_password {
         user_data.push_str("  - sed -i 's/^#\\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config\n");
-        user_data.push_str("  - systemctl restart sshd 2>/dev/null || service sshd restart 2>/dev/null || true\n");
+        // Remove Ubuntu cloud image default that disables password auth
+        user_data.push_str("  - rm -f /etc/ssh/sshd_config.d/60-cloudimg-settings.conf\n");
+        user_data.push_str("  - systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || service sshd restart 2>/dev/null || true\n");
     }
     user_data.push_str("  - touch /etc/cloud/cloud-init.disabled\n");
 
