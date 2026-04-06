@@ -101,12 +101,16 @@ pub fn setup_ssh_include() -> Result<()> {
 }
 
 pub fn update_ssh_config(hostname: &str, ip: &str) -> Result<()> {
+    update_ssh_config_with_user(hostname, ip, "root")
+}
+
+pub fn update_ssh_config_with_user(hostname: &str, ip: &str, user: &str) -> Result<()> {
     let ssh_config_path = cave_ssh_config_path();
     let private_key = Config::ssh_private_key();
 
     let host_entry = format!(
-        "\n# Cave managed node: {}\nHost {}\n    HostName {}\n    User root\n    IdentityFile {}\n    StrictHostKeyChecking no\n    UserKnownHostsFile /dev/null\n",
-        hostname, hostname, ip, private_key.display()
+        "\n# Cave managed node: {}\nHost {}\n    HostName {}\n    User {}\n    IdentityFile {}\n    StrictHostKeyChecking no\n    UserKnownHostsFile /dev/null\n",
+        hostname, hostname, ip, user, private_key.display()
     );
 
     // Ensure cave ssh directory exists

@@ -19,6 +19,7 @@ pub async fn run(
     memory_opt: Option<u32>,
     cpus_opt: Option<u32>,
     disk_opt: Option<u64>,
+    username_opt: Option<String>,
     password_opt: Option<String>,
 ) -> Result<()> {
     let config = Config::load()?;
@@ -315,7 +316,7 @@ pub async fn run(
 
     // Check if this is a cloud image that needs cloud-init
     let seed_iso_path = if needs_cloud_init(&image_path) {
-        Some(create_cloud_init_iso(&vm_name, &theme, non_interactive, password_opt.as_deref())?)
+        Some(create_cloud_init_iso(&vm_name, &theme, non_interactive, username_opt.as_deref(), password_opt.as_deref())?)
     } else {
         None
     };
@@ -446,9 +447,10 @@ pub async fn run(
     let remote_seed_str = remote_seed_path.as_deref().unwrap_or("");
     let disk_name_str = disk_name.as_deref().unwrap_or("");
     let mac_addr = vm::generate_mac_for_lookup(&vm_name);
+    let username_str = username_opt.as_deref().unwrap_or("user");
     let vm_config = format!(
-        "NODE_IP={}\nVM_NAME={}\nMEMORY_MB={}\nCPUS={}\nDISK_PATH={}\nSEED_ISO={}\nDISK_NAME={}\nMAC={}\n",
-        node_ip, vm_name, memory, cpus, remote_image_path, remote_seed_str, disk_name_str, mac_addr
+        "NODE_IP={}\nVM_NAME={}\nMEMORY_MB={}\nCPUS={}\nDISK_PATH={}\nSEED_ISO={}\nDISK_NAME={}\nMAC={}\nUSERNAME={}\n",
+        node_ip, vm_name, memory, cpus, remote_image_path, remote_seed_str, disk_name_str, mac_addr, username_str
     );
     fs::write(&vm_config_path, &vm_config)?;
     ui::print_success("VM config saved");
@@ -558,10 +560,22 @@ fn needs_cloud_init(image_path: &std::path::Path) -> bool {
                 || filename.contains("fedora")))
 }
 
-fn create_cloud_init_iso(hostname: &str, theme: &ColorfulTheme, non_interactive: bool, password_arg: Option<&str>) -> Result<PathBuf> {
+fn create_cloud_init_iso(hostname: &str, theme: &ColorfulTheme, non_interactive: bool, username_arg: Option<&str>, password_arg: Option<&str>) -> Result<PathBuf> {
+    // Username - required in non-interactive mode
+    let username = if let Some(u) = username_arg {
+        u.to_string()
+    } else if non_interactive {
+        "user".to_string()
+    } else {
+        dialoguer::Input::with_theme(theme)
+            .with_prompt("Username")
+            .default("user".to_string())
+            .interact_text()?
+    };
+
     // If password explicitly provided via CLI, use it
     // If non-interactive with no password arg, disable password auth
-    let (enable_password, root_password) = if let Some(pw) = password_arg {
+    let (enable_password, user_password) = if let Some(pw) = password_arg {
         (true, pw.to_string())
     } else if non_interactive {
         (false, String::new())
@@ -610,28 +624,34 @@ fn create_cloud_init_iso(hostname: &str, theme: &ColorfulTheme, non_interactive:
     let user_data_path = seed_dir.join("user-data");
     let mut user_data = String::from("#cloud-config\n");
 
+    // Create the user with sudo access and SSH key
     user_data.push_str("users:\n");
-    user_data.push_str("  - name: root\n");
+    user_data.push_str(&format!("  - name: {}\n", username));
+    user_data.push_str("    shell: /bin/bash\n");
+    user_data.push_str("    sudo: ALL=(ALL) NOPASSWD:ALL\n");
     user_data.push_str("    lock_passwd: false\n");
     user_data.push_str("    ssh_authorized_keys:\n");
     user_data.push_str(&format!("      - {}\n", ssh_pubkey));
 
+    // Disable root SSH login
+    user_data.push_str("disable_root: true\n");
+
     user_data.push_str(&format!("ssh_pwauth: {}\n", enable_password));
 
-    if enable_password && !root_password.is_empty() {
+    if enable_password && !user_password.is_empty() {
         user_data.push_str("chpasswd:\n");
-        user_data.push_str(&format!("  list: |\n    root:{}\n", root_password));
+        user_data.push_str(&format!("  list: |\n    {}:{}\n", username, user_password));
         user_data.push_str("  expire: false\n");
     }
 
     user_data.push_str("runcmd:\n");
-    // Allow root login with password if enabled
+    // Disable root login via SSH
+    user_data.push_str("  - sed -i 's/^#\\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config\n");
     if enable_password {
-        user_data.push_str("  - sed -i 's/^#\\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config\n");
         // Remove Ubuntu cloud image default that disables password auth
         user_data.push_str("  - rm -f /etc/ssh/sshd_config.d/60-cloudimg-settings.conf\n");
-        user_data.push_str("  - systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || service sshd restart 2>/dev/null || true\n");
     }
+    user_data.push_str("  - systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || service sshd restart 2>/dev/null || true\n");
     user_data.push_str("  - touch /etc/cloud/cloud-init.disabled\n");
 
     fs::write(&user_data_path, &user_data)?;

@@ -10,7 +10,9 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use crate::commands::images::{CloudImage, CLOUD_IMAGES};
-use crate::config::{load_discovered_cache, load_node_cache, save_node_cache, CachedNode, CachedVm, Config};
+use std::collections::HashMap;
+
+use crate::config::{load_descriptions, load_discovered_cache, load_node_cache, save_descriptions, save_node_cache, CachedNode, CachedVm, Config};
 
 use super::ui;
 
@@ -25,6 +27,7 @@ pub enum Overlay {
     Deploy(DeployStep),
     ActionProgress(String),  // Running an action (e.g., "Destroying VM...")
     ConfirmRemove,  // Confirm before removing a node (wipes VM data)
+    SetDescription,     // Rename a node hostname
     ImageDownload,
     NodeInit,
     Help,
@@ -85,11 +88,13 @@ pub const NODE_ACTIONS: &[&str] = &[
     "Wake (WoL)",
     "Shutdown",
     "Restart",
+    "Set Description",
     "Remove Node",
 ];
 
 pub const VM_ACTIONS: &[&str] = &[
     "Launch SSH",
+    "Set Description",
     "Destroy",
 ];
 
@@ -140,7 +145,8 @@ pub struct App {
     pub deploy_memory_idx: usize,
     pub deploy_cpu_idx: usize,
     pub deploy_disk_size_idx: usize,    // How much storage on that disk
-    pub deploy_config_field: usize,     // 0=memory, 1=cpu, 2=disk size, 3=password toggle
+    pub deploy_config_field: usize,     // 0=memory, 1=cpu, 2=disk size, 3=username, 4=password toggle, 5=password input
+    pub deploy_username: String,        // SSH username for the VM
     pub deploy_password_enabled: bool,  // Enable SSH password login for VM
     pub deploy_password: String,        // Password value
     pub deploy_pending: bool,           // True when deploy should run on next tick
@@ -154,6 +160,9 @@ pub struct App {
     pub destroy_last_poll: Option<Instant>,
     pub pending_action: Option<String>, // Pending node action (destroy, wake, etc.)
     pub pending_ssh: Option<String>,    // IP to SSH into (handled in main loop)
+    pub descriptions: HashMap<String, String>, // name -> description mapping
+    pub description_input: String,          // Input for set description overlay
+    pub description_target: String,         // Name of node/VM being described
     pub deploy_handle: Option<std::process::Child>, // Running deploy command
 
     // Discovered (uninitialized) nodes from PXE boot (hostname is empty)
@@ -208,6 +217,7 @@ impl App {
             deploy_cpu_idx: 1,    // Default 2 CPUs
             deploy_disk_size_idx: 2,   // Default 50GB
             deploy_config_field: 0,
+            deploy_username: String::new(),
             deploy_password_enabled: false,
             deploy_password: String::new(),
             deploy_pending: false,
@@ -217,6 +227,9 @@ impl App {
             deploy_last_poll: None,
             discovered_nodes: load_discovered_cache(),
             pending_ssh: None,
+            descriptions: load_descriptions(),
+            description_input: String::new(),
+            description_target: String::new(),
             deploy_handle: None,
             destroy_waiting: false,
             destroy_target: None,
@@ -729,6 +742,23 @@ impl App {
                     _ => {}
                 }
             }
+            Overlay::SetDescription => {
+                match code {
+                    KeyCode::Esc => {
+                        self.overlay = Overlay::None;
+                    }
+                    KeyCode::Enter => {
+                        self.execute_set_description();
+                    }
+                    KeyCode::Backspace => {
+                        self.description_input.pop();
+                    }
+                    KeyCode::Char(c) => {
+                        self.description_input.push(c);
+                    }
+                    _ => {}
+                }
+            }
             Overlay::ActionProgress(_) => {} // No input during action
         }
     }
@@ -832,13 +862,13 @@ impl App {
 
     fn execute_selected_action(&mut self) {
         if self.is_selected_vm() {
-            // VM actions: Launch SSH, Destroy
+            // VM actions: Launch SSH, Set Description, Destroy
             match self.selected_action_idx {
                 0 => {
-                    // Launch SSH to VM
+                    // Launch SSH to VM (use VM name so SSH config User is correct)
                     if let Some(vm) = self.selected_vm() {
                         if !vm.ip.is_empty() {
-                            self.pending_ssh = Some(vm.ip.clone());
+                            self.pending_ssh = Some(vm.name.clone());
                             self.overlay = Overlay::None;
                         } else {
                             self.set_status("VM has no IP address yet");
@@ -847,6 +877,18 @@ impl App {
                     }
                 }
                 1 => {
+                    // Set Description
+                    if let Some(vm) = self.selected_vm() {
+                        let vm_name = vm.name.clone();
+                        self.description_input = self.descriptions
+                            .get(&vm_name)
+                            .cloned()
+                            .unwrap_or_default();
+                        self.description_target = vm_name;
+                        self.overlay = Overlay::SetDescription;
+                    }
+                }
+                2 => {
                     // Destroy this VM
                     self.pending_action = Some("destroy".to_string());
                     self.overlay = Overlay::ActionProgress("Destroying VM...".to_string());
@@ -896,10 +938,10 @@ impl App {
             // Registered node: Launch SSH, Deploy, Destroy, Wake, Shutdown, Restart, Remove
             match self.selected_action_idx {
                 0 => {
-                    // Launch SSH to host
+                    // Launch SSH to host (use hostname so SSH config is used)
                     if let Some(node) = self.selected_node() {
-                        if let Some(ref ip) = node.ip {
-                            self.pending_ssh = Some(ip.clone());
+                        if node.ip.is_some() {
+                            self.pending_ssh = Some(node.hostname.clone());
                             self.overlay = Overlay::None;
                         } else {
                             self.set_status("Node has no IP address");
@@ -933,6 +975,18 @@ impl App {
                     self.overlay = Overlay::ActionProgress("Restarting...".to_string());
                 }
                 6 => {
+                    // Set Description
+                    if let Some(node) = self.selected_node() {
+                        let name = node.hostname.clone();
+                        self.description_input = self.descriptions
+                            .get(&name)
+                            .cloned()
+                            .unwrap_or_default();
+                        self.description_target = name;
+                        self.overlay = Overlay::SetDescription;
+                    }
+                }
+                7 => {
                     // Remove Node
                     self.overlay = Overlay::ConfirmRemove;
                 }
@@ -997,87 +1051,101 @@ impl App {
                 _ => {}
             },
 
-            DeployStep::Configure => match code {
-                KeyCode::Esc => self.overlay = Overlay::Deploy(DeployStep::SelectDisk),
-                KeyCode::Up | KeyCode::Char('k') if self.deploy_config_field != 4 => {
-                    // Skip password input field when navigating (jump over it)
-                    if self.deploy_config_field == 4 {
-                        self.deploy_config_field = 3;
-                    } else {
+            DeployStep::Configure => {
+                match code {
+                    KeyCode::Esc => {
+                        if self.deploy_config_field == 3 || self.deploy_config_field == 5 {
+                            // Exit text field
+                            self.deploy_config_field = self.deploy_config_field.saturating_sub(1);
+                        } else {
+                            self.overlay = Overlay::Deploy(DeployStep::SelectDisk);
+                        }
+                    }
+
+                    // Up arrow always navigates up
+                    KeyCode::Up => {
                         self.deploy_config_field = self.deploy_config_field.saturating_sub(1);
                     }
-                }
-                KeyCode::Down | KeyCode::Char('j') if self.deploy_config_field != 4 => {
-                    let max_field = if self.deploy_password_enabled { 4 } else { 3 };
-                    if self.deploy_config_field < max_field {
-                        self.deploy_config_field += 1;
-                    }
-                }
-                KeyCode::Left | KeyCode::Char('h') if self.deploy_config_field != 4 => {
-                    match self.deploy_config_field {
-                        0 => self.deploy_memory_idx = self.deploy_memory_idx.saturating_sub(1),
-                        1 => self.deploy_cpu_idx = self.deploy_cpu_idx.saturating_sub(1),
-                        2 => self.deploy_disk_size_idx = self.deploy_disk_size_idx.saturating_sub(1),
-                        _ => {}
-                    }
-                }
-                KeyCode::Right | KeyCode::Char('l') if self.deploy_config_field != 4 => {
-                    let max_mem = self.max_memory_idx();
-                    let max_cpu = self.max_cpu_idx();
-                    let max_disk = self.max_disk_size_idx();
-                    match self.deploy_config_field {
-                        0 if self.deploy_memory_idx < max_mem => {
-                            self.deploy_memory_idx += 1;
+                    // Down/Tab always navigates down
+                    KeyCode::Down | KeyCode::Tab => {
+                        let max_field = if self.deploy_password_enabled { 5 } else { 4 };
+                        if self.deploy_config_field < max_field {
+                            self.deploy_config_field += 1;
                         }
-                        1 if self.deploy_cpu_idx < max_cpu => {
-                            self.deploy_cpu_idx += 1;
+                    }
+
+                    // j/k navigation only on non-text fields
+                    KeyCode::Char('k') if self.deploy_config_field <= 2 || self.deploy_config_field == 4 => {
+                        self.deploy_config_field = self.deploy_config_field.saturating_sub(1);
+                    }
+                    KeyCode::Char('j') if self.deploy_config_field <= 2 || self.deploy_config_field == 4 => {
+                        let max_field = if self.deploy_password_enabled { 5 } else { 4 };
+                        if self.deploy_config_field < max_field {
+                            self.deploy_config_field += 1;
                         }
-                        2 if self.deploy_disk_size_idx < max_disk => {
-                            self.deploy_disk_size_idx += 1;
+                    }
+
+                    // Arrow key fields (0=memory, 1=cpu, 2=disk)
+                    KeyCode::Left | KeyCode::Char('h') if self.deploy_config_field <= 2 => {
+                        match self.deploy_config_field {
+                            0 => self.deploy_memory_idx = self.deploy_memory_idx.saturating_sub(1),
+                            1 => self.deploy_cpu_idx = self.deploy_cpu_idx.saturating_sub(1),
+                            2 => self.deploy_disk_size_idx = self.deploy_disk_size_idx.saturating_sub(1),
+                            _ => {}
                         }
-                        _ => {}
                     }
-                }
-                // Toggle password on field 3
-                KeyCode::Char(' ') if self.deploy_config_field == 3 => {
-                    self.deploy_password_enabled = !self.deploy_password_enabled;
-                    if !self.deploy_password_enabled {
-                        self.deploy_password.clear();
+                    KeyCode::Right | KeyCode::Char('l') if self.deploy_config_field <= 2 => {
+                        let max_mem = self.max_memory_idx();
+                        let max_cpu = self.max_cpu_idx();
+                        let max_disk = self.max_disk_size_idx();
+                        match self.deploy_config_field {
+                            0 if self.deploy_memory_idx < max_mem => self.deploy_memory_idx += 1,
+                            1 if self.deploy_cpu_idx < max_cpu => self.deploy_cpu_idx += 1,
+                            2 if self.deploy_disk_size_idx < max_disk => self.deploy_disk_size_idx += 1,
+                            _ => {}
+                        }
                     }
-                }
-                KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l')
-                    if self.deploy_config_field == 3 => {
-                    self.deploy_password_enabled = !self.deploy_password_enabled;
-                    if !self.deploy_password_enabled {
-                        self.deploy_password.clear();
+
+                    // Username text input (field 3)
+                    KeyCode::Backspace if self.deploy_config_field == 3 => {
+                        self.deploy_username.pop();
                     }
-                }
-                // Password input field (field 4)
-                KeyCode::Backspace if self.deploy_config_field == 4 => {
-                    self.deploy_password.pop();
-                }
-                KeyCode::Char(c) if self.deploy_config_field == 4 => {
-                    self.deploy_password.push(c);
-                }
-                KeyCode::Up | KeyCode::Char('k') if self.deploy_config_field == 4 => {
-                    self.deploy_config_field = 3;
-                }
-                KeyCode::Enter if self.deploy_config_field == 4 => {
-                    if !self.deploy_password.is_empty() {
-                        self.overlay = Overlay::Deploy(DeployStep::Confirm);
+                    KeyCode::Char(c) if self.deploy_config_field == 3 => {
+                        if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                            self.deploy_username.push(c);
+                        }
                     }
-                }
-                KeyCode::Enter => {
-                    // If password enabled but empty, move to password field
-                    if self.deploy_password_enabled && self.deploy_password.is_empty() && self.deploy_config_field == 3 {
-                        self.deploy_config_field = 4;
-                    } else if self.deploy_password_enabled && self.deploy_password.is_empty() {
-                        self.deploy_config_field = 4;
-                    } else {
-                        self.overlay = Overlay::Deploy(DeployStep::Confirm);
+
+                    // Password toggle (field 4)
+                    KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right
+                        | KeyCode::Char('h') | KeyCode::Char('l')
+                        if self.deploy_config_field == 4 => {
+                        self.deploy_password_enabled = !self.deploy_password_enabled;
+                        if !self.deploy_password_enabled {
+                            self.deploy_password.clear();
+                        }
                     }
+
+                    // Password text input (field 5)
+                    KeyCode::Backspace if self.deploy_config_field == 5 => {
+                        self.deploy_password.pop();
+                    }
+                    KeyCode::Char(c) if self.deploy_config_field == 5 => {
+                        self.deploy_password.push(c);
+                    }
+
+                    // Enter
+                    KeyCode::Enter => {
+                        if self.deploy_username.is_empty() {
+                            self.deploy_config_field = 3;
+                        } else if self.deploy_password_enabled && self.deploy_password.is_empty() {
+                            self.deploy_config_field = 5;
+                        } else {
+                            self.overlay = Overlay::Deploy(DeployStep::Confirm);
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
             },
 
             DeployStep::Confirm => match code {
@@ -1220,6 +1288,7 @@ impl App {
         self.deploy_cpu_idx = 1.min(max_cpu);     // 2 CPUs default
         self.deploy_disk_select_idx = 0;          // First disk
         self.deploy_disk_size_idx = 2;            // 50GB default (will be clamped)
+        self.deploy_username.clear();
         self.deploy_password_enabled = false;
         self.deploy_password.clear();
 
@@ -1356,6 +1425,31 @@ impl App {
         }
     }
 
+    fn execute_set_description(&mut self) {
+        let desc = self.description_input.trim().to_string();
+        let target = self.description_target.clone();
+
+        if target.is_empty() {
+            self.overlay = Overlay::None;
+            return;
+        }
+
+        if desc.is_empty() {
+            // Empty description = remove it
+            self.descriptions.remove(&target);
+        } else {
+            self.descriptions.insert(target.clone(), desc.clone());
+        }
+        let _ = save_descriptions(&self.descriptions);
+
+        self.overlay = Overlay::None;
+        if desc.is_empty() {
+            self.set_status(&format!("Description cleared for {}", target));
+        } else {
+            self.set_status(&format!("Description set for {}", target));
+        }
+    }
+
     fn parse_mac(mac: &str) -> Result<[u8; 6], ()> {
         let bytes: Vec<u8> = mac
             .split(':')
@@ -1410,6 +1504,10 @@ impl App {
             "--cpus".to_string(), cpus.to_string(),
             "--disk".to_string(), disk.to_string(),
         ];
+        if !self.deploy_username.is_empty() {
+            args.push("--username".to_string());
+            args.push(self.deploy_username.clone());
+        }
         if self.deploy_password_enabled && !self.deploy_password.is_empty() {
             args.push("--password".to_string());
             args.push(self.deploy_password.clone());
@@ -1611,21 +1709,29 @@ pub fn run() -> Result<()> {
         }
 
         // Check for pending SSH (leave TUI, run interactive SSH, return)
-        if let Some(ip) = app.pending_ssh.take() {
+        if let Some(target) = app.pending_ssh.take() {
             // Leave alternate screen
             disable_raw_mode()?;
             execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
             terminal.show_cursor()?;
 
             // Run SSH interactively
-            let key_path = Config::ssh_private_key();
-            let _ = Command::new("ssh")
-                .args([
-                    "-i", &key_path.to_string_lossy(),
-                    "-o", "StrictHostKeyChecking=no",
-                    &format!("root@{}", ip),
-                ])
-                .status();
+            // If target looks like an IP (discovered node), use cave key + root@
+            // Otherwise use SSH config hostname (which has the right user/key)
+            if target.contains('.') && target.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+                let key_path = Config::ssh_private_key();
+                let _ = Command::new("ssh")
+                    .args([
+                        "-i", &key_path.to_string_lossy(),
+                        "-o", "StrictHostKeyChecking=no",
+                        &format!("root@{}", target),
+                    ])
+                    .status();
+            } else {
+                let _ = Command::new("ssh")
+                    .arg(&target)
+                    .status();
+            }
 
             // Re-enter alternate screen
             enable_raw_mode()?;

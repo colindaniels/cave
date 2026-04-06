@@ -66,7 +66,17 @@ pub async fn run() -> Result<()> {
                 // Update SSH config for VM if it has an IP
                 if let Some(ref vm) = vm_info {
                     if !vm.ip.is_empty() {
-                        let _ = ssh::update_ssh_config(&vm.name, &vm.ip);
+                        // Read username from local VM config if available
+                        let vm_conf_path = Config::vms_dir().join(format!("{}.conf", node.hostname));
+                        let vm_user = std::fs::read_to_string(&vm_conf_path)
+                            .ok()
+                            .and_then(|content| {
+                                content.lines()
+                                    .find(|l| l.starts_with("USERNAME="))
+                                    .map(|l| l.trim_start_matches("USERNAME=").to_string())
+                            })
+                            .unwrap_or_else(|| "root".to_string());
+                        let _ = ssh::update_ssh_config_with_user(&vm.name, &vm.ip, &vm_user);
                     }
                 }
 

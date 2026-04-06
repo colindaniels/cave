@@ -8,7 +8,7 @@
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 176,
+    "ram_used_mb": 174,
     "disks": [
       {
         "name": "sda",
@@ -34,7 +34,7 @@
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 2543,
+    "ram_used_mb": 4298,
     "disks": [
       {
         "name": "nvme0n1",
@@ -45,9 +45,9 @@
     ],
     "vm": {
       "name": "mercury2-vm",
-      "ip": "192.168.1.144",
+      "ip": "192.168.1.151",
       "memory": "4096M",
-      "memory_used_mb": 643,
+      "memory_used_mb": 782,
       "cpus": "4"
     }
   },
@@ -60,7 +60,7 @@
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 168,
+    "ram_used_mb": 166,
     "disks": [
       {
         "name": "nvme0n1",
@@ -80,7 +80,7 @@
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 169,
+    "ram_used_mb": 175,
     "disks": [
       {
         "name": "nvme0n1",
@@ -100,7 +100,7 @@
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 161,
+    "ram_used_mb": 167,
     "disks": [
       {
         "name": "nvme0n1",
@@ -120,7 +120,7 @@
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 118,
+    "ram_used_mb": 115,
     "disks": [
       {
         "name": "nvme0n1",
@@ -140,7 +140,7 @@
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 171,
+    "ram_used_mb": 162,
     "disks": [
       {
         "name": "nvme0n1",
@@ -185,19 +185,6 @@
     "vm": null
   },
   {
-    "hostname": "plutonium",
-    "mac": "d4:5d:64:3e:ac:7b",
-    "ip": null,
-    "status": "offline",
-    "cpu": "N/A",
-    "cores": "N/A",
-    "ram": "N/A",
-    "ram_total_mb": null,
-    "ram_used_mb": null,
-    "disks": [],
-    "vm": null
-  },
-  {
     "hostname": "platinum",
     "mac": "b0:41:6f:15:71:8d",
     "ip": "192.168.1.103",
@@ -206,7 +193,7 @@
     "cores": "22 cores",
     "ram": "62.5G",
     "ram_total_mb": 63978,
-    "ram_used_mb": 2499,
+    "ram_used_mb": 10477,
     "disks": [
       {
         "name": "nvme0n1",
@@ -217,10 +204,30 @@
     ],
     "vm": {
       "name": "platinum-vm",
-      "ip": "192.168.1.172",
+      "ip": "192.168.1.155",
       "memory": "49152M",
-      "memory_used_mb": 769,
+      "memory_used_mb": null,
       "cpus": "16"
     }
+  },
+  {
+    "hostname": "plutonium",
+    "mac": "d4:5d:64:3e:ac:7b",
+    "ip": "192.168.1.191",
+    "status": "standby",
+    "cpu": "Intel(R) Core(TM) i9-9900K CPU @ 3.60GHz",
+    "cores": "16 cores",
+    "ram": "62.7G",
+    "ram_total_mb": 64172,
+    "ram_used_mb": 138,
+    "disks": [
+      {
+        "name": "nvme0n1",
+        "size_bytes": 1000204886016,
+        "disk_type": "SSD",
+        "model": "Samsung SSD 970 EVO Plus 1TB"
+      }
+    ],
+    "vm": null
   }
 ]

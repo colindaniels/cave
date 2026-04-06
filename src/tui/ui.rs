@@ -75,6 +75,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Overlay::ImageDownload => draw_image_download_overlay(f, app),
         Overlay::NodeInit => draw_node_init_overlay(f, app),
         Overlay::ConfirmRemove => draw_confirm_remove_overlay(f, app),
+        Overlay::SetDescription => draw_description_overlay(f, app),
         Overlay::Help => draw_help_overlay(f),
     }
 }
@@ -263,10 +264,14 @@ fn draw_node_list(f: &mut Frame, app: &App, area: Rect) {
                     } else {
                         Style::default().fg(TEXT)
                     };
-                    ListItem::new(Line::from(vec![
+                    let mut spans = vec![
                         Span::styled(format!(" {} ", indicator), Style::default().fg(color)),
                         Span::styled(&node.hostname, style),
-                    ])).style(style)
+                    ];
+                    if let Some(desc) = app.descriptions.get(&node.hostname) {
+                        spans.push(Span::styled(format!(" ({})", desc), Style::default().fg(SUBTEXT)));
+                    }
+                    ListItem::new(Line::from(spans)).style(style)
                 }
                 SelectableItem::Vm(ni) => {
                     let node = &app.nodes[*ni];
@@ -276,10 +281,14 @@ fn draw_node_list(f: &mut Frame, app: &App, area: Rect) {
                     } else {
                         Style::default().fg(MAUVE)
                     };
-                    ListItem::new(Line::from(vec![
+                    let mut spans = vec![
                         Span::styled("   └─ ", Style::default().fg(SURFACE1)),
                         Span::styled(&vm.name, style),
-                    ])).style(style)
+                    ];
+                    if let Some(desc) = app.descriptions.get(&vm.name) {
+                        spans.push(Span::styled(format!(" ({})", desc), Style::default().fg(SUBTEXT)));
+                    }
+                    ListItem::new(Line::from(spans)).style(style)
                 }
                 SelectableItem::DiscoveredNode(di) => {
                     let disc = &app.discovered_nodes[*di];
@@ -765,8 +774,28 @@ fn draw_deploy_overlay(f: &mut Frame, app: &App, step: DeployStep) {
                 lines.push(Line::from(""));
             }
 
-            // Password toggle (field 3)
-            let pw_selected = app.deploy_config_field == 3;
+            // Username input (field 3)
+            let user_selected = app.deploy_config_field == 3;
+            let user_style = if user_selected {
+                Style::default().fg(MAUVE).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(TEXT)
+            };
+            let user_arrow = if user_selected { " > " } else { "   " };
+            let user_display = if app.deploy_username.is_empty() {
+                "type username...".to_string()
+            } else {
+                app.deploy_username.clone()
+            };
+            lines.push(Line::from(vec![
+                Span::styled(user_arrow, Style::default().fg(MAUVE)),
+                Span::styled("User      ", Style::default().fg(SUBTEXT)),
+                Span::styled(format!(" [{}]", user_display), user_style),
+            ]));
+            lines.push(Line::from(""));
+
+            // Password toggle (field 4)
+            let pw_selected = app.deploy_config_field == 4;
             let pw_style = if pw_selected {
                 Style::default().fg(MAUVE).add_modifier(Modifier::BOLD)
             } else {
@@ -780,9 +809,9 @@ fn draw_deploy_overlay(f: &mut Frame, app: &App, step: DeployStep) {
             ]));
             lines.push(Line::from(""));
 
-            // Password input (field 4, only if enabled)
+            // Password input (field 5, only if enabled)
             if app.deploy_password_enabled {
-                let input_selected = app.deploy_config_field == 4;
+                let input_selected = app.deploy_config_field == 5;
                 let input_style = if input_selected {
                     Style::default().fg(MAUVE).add_modifier(Modifier::BOLD)
                 } else {
@@ -842,6 +871,10 @@ fn draw_deploy_overlay(f: &mut Frame, app: &App, step: DeployStep) {
                 Line::from(vec![
                     Span::styled("  Disk:   ", Style::default().fg(SUBTEXT)),
                     Span::styled(disk_label, Style::default().fg(TEXT)),
+                ]),
+                Line::from(vec![
+                    Span::styled("  User:   ", Style::default().fg(SUBTEXT)),
+                    Span::styled(&app.deploy_username, Style::default().fg(TEXT)),
                 ]),
                 Line::from(vec![
                     Span::styled("  SSH pw: ", Style::default().fg(SUBTEXT)),
@@ -989,6 +1022,48 @@ fn draw_node_init_overlay(f: &mut Frame, app: &App) {
         Line::from(""),
         Line::from(""),
         Line::from(Span::styled("Tab to switch fields, Enter to add", Style::default().fg(SUBTEXT))),
+    ];
+
+    let para = Paragraph::new(lines);
+    f.render_widget(para, inner);
+}
+
+fn draw_description_overlay(f: &mut Frame, app: &App) {
+    let area = centered_rect(50, 9, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(format!(" {} ", app.description_target))
+        .title_style(Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(LAVENDER))
+        .style(Style::default().bg(BASE));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let cursor = if (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() / 500) % 2 == 0 { "▌" } else { " " };
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Description: ", Style::default().fg(SUBTEXT)),
+            Span::styled(&app.description_input, Style::default().fg(TEXT).add_modifier(Modifier::BOLD)),
+            Span::styled(cursor, Style::default().fg(MAUVE)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("  Leave empty to clear", Style::default().fg(SUBTEXT))),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  [Enter] ", Style::default().fg(BLUE)),
+            Span::styled("save   ", Style::default().fg(SUBTEXT)),
+            Span::styled("[Esc] ", Style::default().fg(BLUE)),
+            Span::styled("cancel", Style::default().fg(SUBTEXT)),
+        ]),
     ];
 
     let para = Paragraph::new(lines);

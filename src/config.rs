@@ -175,6 +175,25 @@ pub fn save_discovered_cache(cache: &[CachedNode]) -> Result<()> {
     Ok(())
 }
 
+/// Load descriptions (name -> description mapping)
+pub fn load_descriptions() -> HashMap<String, String> {
+    let path = Config::cave_dir().join("descriptions.json");
+    if let Ok(content) = fs::read_to_string(&path) {
+        if let Ok(map) = serde_json::from_str(&content) {
+            return map;
+        }
+    }
+    HashMap::new()
+}
+
+/// Save descriptions
+pub fn save_descriptions(descriptions: &HashMap<String, String>) -> Result<()> {
+    let path = Config::cave_dir().join("descriptions.json");
+    let content = serde_json::to_string_pretty(descriptions)?;
+    fs::write(&path, content)?;
+    Ok(())
+}
+
 /// Load full node cache
 pub fn load_node_cache() -> Vec<CachedNode> {
     let cache_path = Config::cave_dir().join("node_cache.json");
