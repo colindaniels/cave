@@ -8,7 +8,7 @@
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 174,
+    "ram_used_mb": 179,
     "disks": [
       {
         "name": "sda",
@@ -34,7 +34,7 @@
     "cores": "4 cores",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 4298,
+    "ram_used_mb": 4292,
     "disks": [
       {
         "name": "nvme0n1",
@@ -47,128 +47,86 @@
       "name": "mercury2-vm",
       "ip": "192.168.1.151",
       "memory": "4096M",
-      "memory_used_mb": 782,
+      "memory_used_mb": 1509,
       "cpus": "4"
     }
   },
   {
     "hostname": "mercury3",
     "mac": "7c:83:34:bb:8e:f3",
-    "ip": "192.168.1.13",
-    "status": "standby",
-    "cpu": "Intel(R) N95",
-    "cores": "4 cores",
-    "ram": "7.5G",
-    "ram_total_mb": 7724,
-    "ram_used_mb": 166,
-    "disks": [
-      {
-        "name": "nvme0n1",
-        "size_bytes": 256060514304,
-        "disk_type": "SSD",
-        "model": "Timetec 35TTFP6PCIE-256G"
-      }
-    ],
+    "ip": null,
+    "status": "offline",
+    "cpu": "N/A",
+    "cores": "N/A",
+    "ram": "N/A",
+    "ram_total_mb": null,
+    "ram_used_mb": null,
+    "disks": [],
     "vm": null
   },
   {
     "hostname": "mercury4",
     "mac": "7c:83:34:bb:8e:ec",
-    "ip": "192.168.1.14",
-    "status": "standby",
-    "cpu": "Intel(R) N95",
-    "cores": "4 cores",
-    "ram": "7.5G",
-    "ram_total_mb": 7724,
-    "ram_used_mb": 175,
-    "disks": [
-      {
-        "name": "nvme0n1",
-        "size_bytes": 256060514304,
-        "disk_type": "SSD",
-        "model": "Timetec 35TTFP6PCIE-256G"
-      }
-    ],
+    "ip": null,
+    "status": "offline",
+    "cpu": "N/A",
+    "cores": "N/A",
+    "ram": "N/A",
+    "ram_total_mb": null,
+    "ram_used_mb": null,
+    "disks": [],
     "vm": null
   },
   {
     "hostname": "mercury5",
     "mac": "7c:83:34:bb:93:a6",
-    "ip": "192.168.1.15",
-    "status": "standby",
-    "cpu": "Intel(R) N95",
-    "cores": "4 cores",
-    "ram": "7.5G",
-    "ram_total_mb": 7724,
-    "ram_used_mb": 167,
-    "disks": [
-      {
-        "name": "nvme0n1",
-        "size_bytes": 256060514304,
-        "disk_type": "SSD",
-        "model": "Timetec 35TTFP6PCIE-256G"
-      }
-    ],
+    "ip": null,
+    "status": "offline",
+    "cpu": "N/A",
+    "cores": "N/A",
+    "ram": "N/A",
+    "ram_total_mb": null,
+    "ram_used_mb": null,
+    "disks": [],
     "vm": null
   },
   {
     "hostname": "mercury6",
     "mac": "7c:83:34:bb:93:a7",
-    "ip": "192.168.1.16",
-    "status": "standby",
-    "cpu": "Intel(R) N95",
-    "cores": "4 cores",
-    "ram": "7.5G",
-    "ram_total_mb": 7724,
-    "ram_used_mb": 115,
-    "disks": [
-      {
-        "name": "nvme0n1",
-        "size_bytes": 256060514304,
-        "disk_type": "SSD",
-        "model": "256GB SSD"
-      }
-    ],
+    "ip": null,
+    "status": "offline",
+    "cpu": "N/A",
+    "cores": "N/A",
+    "ram": "N/A",
+    "ram_total_mb": null,
+    "ram_used_mb": null,
+    "disks": [],
     "vm": null
   },
   {
     "hostname": "mercury7",
     "mac": "7c:83:34:bb:8f:3e",
-    "ip": "192.168.1.17",
-    "status": "standby",
-    "cpu": "Intel(R) N95",
-    "cores": "4 cores",
-    "ram": "7.5G",
-    "ram_total_mb": 7724,
-    "ram_used_mb": 162,
-    "disks": [
-      {
-        "name": "nvme0n1",
-        "size_bytes": 256060514304,
-        "disk_type": "SSD",
-        "model": "Timetec 35TTFP6PCIE-256G"
-      }
-    ],
+    "ip": null,
+    "status": "offline",
+    "cpu": "N/A",
+    "cores": "N/A",
+    "ram": "N/A",
+    "ram_total_mb": null,
+    "ram_used_mb": null,
+    "disks": [],
     "vm": null
   },
   {
     "hostname": "mercury8",
     "mac": "7c:83:34:bb:93:82",
-    "ip": "192.168.1.18",
-    "status": "standby",
-    "cpu": "Intel(R) N95",
-    "cores": "4 cores",
-    "ram": "7.5G",
-    "ram_total_mb": 7724,
-    "ram_used_mb": 162,
-    "disks": [
-      {
-        "name": "nvme0n1",
-        "size_bytes": 256060514304,
-        "disk_type": "SSD",
-        "model": "Timetec 35TTFP6PCIE-256G"
-      }
-    ],
+    "ip": null,
+    "status": "offline",
+    "cpu": "N/A",
+    "cores": "N/A",
+    "ram": "N/A",
+    "ram_total_mb": null,
+    "ram_used_mb": null,
+    "disks": [],
     "vm": null
   },
   {
@@ -193,7 +151,7 @@
     "cores": "22 cores",
     "ram": "62.5G",
     "ram_total_mb": 63978,
-    "ram_used_mb": 10477,
+    "ram_used_mb": 13864,
     "disks": [
       {
         "name": "nvme0n1",
@@ -204,7 +162,7 @@
     ],
     "vm": {
       "name": "platinum-vm",
-      "ip": "192.168.1.155",
+      "ip": "192.168.1.157",
       "memory": "49152M",
       "memory_used_mb": null,
       "cpus": "16"
@@ -212,15 +170,27 @@
   },
   {
     "hostname": "plutonium",
-    "mac": "d4:5d:64:3e:ac:7b",
-    "ip": "192.168.1.191",
+    "mac": "30:56:0f:46:b3:ed",
+    "ip": "192.168.1.158",
     "status": "standby",
-    "cpu": "Intel(R) Core(TM) i9-9900K CPU @ 3.60GHz",
-    "cores": "16 cores",
-    "ram": "62.7G",
-    "ram_total_mb": 64172,
-    "ram_used_mb": 138,
+    "cpu": "AMD Ryzen Threadripper 9960X 24-Cores",
+    "cores": "48 cores",
+    "ram": "125.1G",
+    "ram_total_mb": 128144,
+    "ram_used_mb": 401,
     "disks": [
+      {
+        "name": "sda",
+        "size_bytes": 8001563222016,
+        "disk_type": "HDD",
+        "model": "ST8000DM004-2U91"
+      },
+      {
+        "name": "sdb",
+        "size_bytes": 8001563222016,
+        "disk_type": "HDD",
+        "model": "ST8000DM004-2U91"
+      },
       {
         "name": "nvme0n1",
         "size_bytes": 1000204886016,

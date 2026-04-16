@@ -248,6 +248,14 @@ pub async fn start() -> Result<()> {
     let ssh_key_url = format!("http://{}:{}/cave.pub", local_ip, port);
     let alpine_repo = format!("{}/v{}/main", ALPINE_MIRROR, config.server.alpine_version);
 
+    // Patch Alpine initramfs to try all interfaces and not loop forever
+    let patched_initramfs = alpine_dir.join("initramfs-lts-patched");
+    let spinner = create_spinner("Patching initramfs for multi-NIC support...");
+    patch_initramfs(&initramfs, &patched_initramfs)?;
+    spinner.finish_and_clear();
+    ui::print_success("Initramfs patched");
+    let initramfs = patched_initramfs;
+
     let cmdline = format!(
         "ip=dhcp ssh_key={} modloop={} alpine_repo={}",
         ssh_key_url, modloop_url, alpine_repo
@@ -552,6 +560,120 @@ pub async fn logs() -> Result<()> {
 
     let _ = child.wait();
 
+    Ok(())
+}
+
+/// Patch Alpine's initramfs to try DHCP on all interfaces and not loop forever.
+/// Extracts the initramfs, modifies the init script, repacks it.
+fn patch_initramfs(original: &std::path::Path, output: &std::path::Path) -> Result<()> {
+    let tmp_dir = Config::cave_dir().join(".initramfs-tmp");
+    let _ = fs::remove_dir_all(&tmp_dir);
+    fs::create_dir_all(&tmp_dir)?;
+
+    // Extract original initramfs
+    let status = Command::new("sh")
+        .args(["-c", &format!(
+            "cd {} && zcat {} | cpio -id 2>/dev/null",
+            tmp_dir.display(), original.display()
+        )])
+        .status()
+        .context("Failed to extract initramfs")?;
+
+    if !status.success() {
+        // Try gzip, then try other compression formats
+        let _ = Command::new("sh")
+            .args(["-c", &format!(
+                "cd {} && cat {} | cpio -id 2>/dev/null",
+                tmp_dir.display(), original.display()
+            )])
+            .status();
+    }
+
+    let init_path = tmp_dir.join("init");
+    if !init_path.exists() {
+        anyhow::bail!("Could not find /init in initramfs");
+    }
+
+    // Read the init script
+    let init_content = fs::read_to_string(&init_path)
+        .context("Failed to read init script")?;
+
+    // Patch: replace configure_ip to try all interfaces with a timeout
+    // We completely replace the configure_ip() function body
+    let patched = if init_content.contains("configure_ip()") {
+        let replacement_fn = r#"configure_ip() {
+	# Cave: try DHCP on all interfaces, not just the default
+	for _iface in $(ls /sys/class/net/ 2>/dev/null | grep -v lo); do
+		ip link set "$_iface" up 2>/dev/null
+	done
+	# Wait for links to come up (10GbE can be slow)
+	_attempt=0
+	while [ $_attempt -lt 10 ]; do
+		for _iface in $(ls /sys/class/net/ 2>/dev/null | grep -v lo); do
+			_carrier=$(cat "/sys/class/net/$_iface/carrier" 2>/dev/null || echo 0)
+			if [ "$_carrier" = "1" ]; then
+				ebegin "Obtaining IP via DHCP ($_iface)"
+				if udhcpc -i "$_iface" -n -q -f -t 3; then
+					eend 0
+					MAC_ADDRESS=$(cat /sys/class/net/$_iface/address)
+					KOPT_ifname="$_iface"
+					return 0
+				fi
+				eend 1
+			fi
+		done
+		_attempt=$((_attempt + 1))
+		sleep 1
+	done
+	return 1
+}"#;
+        // Find configure_ip() and replace the entire function body
+        // The function ends at the next closing brace at the start of a line
+        let mut result = String::new();
+        let mut in_configure_ip = false;
+        let mut brace_depth = 0;
+        let mut replaced = false;
+        for line in init_content.lines() {
+            if !replaced && line.trim().starts_with("configure_ip()") {
+                in_configure_ip = true;
+                result.push_str(replacement_fn);
+                result.push('\n');
+                continue;
+            }
+            if in_configure_ip {
+                if line.contains('{') { brace_depth += 1; }
+                if line.contains('}') { brace_depth -= 1; }
+                if brace_depth <= 0 && line.trim() == "}" {
+                    in_configure_ip = false;
+                    replaced = true;
+                }
+                continue; // skip original lines
+            }
+            result.push_str(line);
+            result.push('\n');
+        }
+        result
+    } else {
+        // Fallback: just add -t 5 -n to udhcpc calls
+        init_content.replace("udhcpc -i", "udhcpc -t 5 -n -i")
+    };
+
+    fs::write(&init_path, patched)?;
+
+    // Repack the initramfs
+    let status = Command::new("sh")
+        .args(["-c", &format!(
+            "cd {} && find . | cpio -o -H newc 2>/dev/null | gzip > {}",
+            tmp_dir.display(), output.display()
+        )])
+        .status()
+        .context("Failed to repack initramfs")?;
+
+    if !status.success() {
+        anyhow::bail!("Failed to repack initramfs");
+    }
+
+    let _ = fs::remove_dir_all(&tmp_dir);
     Ok(())
 }
 

@@ -12,6 +12,7 @@ use super::app::{
 };
 use super::widgets::logo::LOGO;
 use crate::commands::images::CLOUD_IMAGES;
+use crate::vm;
 
 // ============================================================================
 // Color Scheme - Catppuccin Mocha
@@ -335,6 +336,7 @@ fn draw_node_details(f: &mut Frame, app: &App, area: Rect) {
         };
 
         let vm_ip_display = if vm.ip.is_empty() { "-" } else { &vm.ip };
+        let vm_mac = vm::generate_mac_for_lookup(&vm.name);
 
         let info_lines = vec![
             Line::from(vec![
@@ -352,6 +354,10 @@ fn draw_node_details(f: &mut Frame, app: &App, area: Rect) {
             Line::from(vec![
                 Span::styled("  IP       ", Style::default().fg(SUBTEXT)),
                 Span::styled(vm_ip_display, Style::default().fg(TEXT)),
+            ]),
+            Line::from(vec![
+                Span::styled("  MAC      ", Style::default().fg(SUBTEXT)),
+                Span::styled(&vm_mac, Style::default().fg(TEXT)),
             ]),
             Line::from(vec![
                 Span::styled("  Memory   ", Style::default().fg(SUBTEXT)),
