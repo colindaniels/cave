@@ -211,7 +211,7 @@ pub fn get_node_specs(ip: &str) -> NodeSpecs {
             if let Ok(output) = ssh.execute("nproc 2>/dev/null || grep -c processor /proc/cpuinfo") {
                 let cores = output.trim();
                 if !cores.is_empty() {
-                    specs.cores = format!("{} cores", cores);
+                    specs.cores = cores.to_string();
                 }
             }
 

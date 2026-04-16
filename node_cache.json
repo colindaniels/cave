@@ -5,10 +5,10 @@
     "ip": "192.168.1.11",
     "status": "standby",
     "cpu": "Intel(R) N95",
-    "cores": "4 cores",
+    "cores": "4",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 179,
+    "ram_used_mb": 174,
     "disks": [
       {
         "name": "sda",
@@ -31,7 +31,7 @@
     "ip": "192.168.1.12",
     "status": "active",
     "cpu": "Intel(R) N95",
-    "cores": "4 cores",
+    "cores": "4",
     "ram": "7.5G",
     "ram_total_mb": 7724,
     "ram_used_mb": 4292,
@@ -47,7 +47,7 @@
       "name": "mercury2-vm",
       "ip": "192.168.1.151",
       "memory": "4096M",
-      "memory_used_mb": 1509,
+      "memory_used_mb": 1476,
       "cpus": "4"
     }
   },
@@ -148,10 +148,10 @@
     "ip": "192.168.1.103",
     "status": "active",
     "cpu": "Intel(R) Core(TM) Ultra 9 185H",
-    "cores": "22 cores",
+    "cores": "22",
     "ram": "62.5G",
     "ram_total_mb": 63978,
-    "ram_used_mb": 13864,
+    "ram_used_mb": 13861,
     "disks": [
       {
         "name": "nvme0n1",
@@ -174,10 +174,10 @@
     "ip": "192.168.1.158",
     "status": "standby",
     "cpu": "AMD Ryzen Threadripper 9960X 24-Cores",
-    "cores": "48 cores",
+    "cores": "48",
     "ram": "125.1G",
     "ram_total_mb": 128144,
-    "ram_used_mb": 401,
+    "ram_used_mb": 388,
     "disks": [
       {
         "name": "sda",

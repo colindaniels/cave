@@ -8,7 +8,7 @@ use ratatui::{
 
 use super::app::{
     App, DeployStep, Overlay, SelectableItem,
-    CPU_OPTIONS, DISCOVERED_NODE_ACTIONS, MEMORY_OPTIONS, NODE_ACTIONS, VM_ACTIONS,
+    DISCOVERED_NODE_ACTIONS, NODE_ACTIONS, VM_ACTIONS,
 };
 use super::widgets::logo::LOGO;
 use crate::commands::images::CLOUD_IMAGES;
@@ -755,14 +755,16 @@ fn draw_deploy_overlay(f: &mut Frame, app: &App, step: DeployStep) {
 
         DeployStep::Configure => {
             let disk_label = app.selected_disk_size_label();
+            let mem_label = app.selected_memory_label();
+            let cpu_label = app.selected_cpu_label();
             let pw_toggle = if app.deploy_password_enabled { "Yes" } else { "No" };
 
             let mut lines = vec![Line::from("")];
 
             // Memory, CPU, Disk fields (0-2)
             let fields: [(&str, &str, bool); 3] = [
-                ("Memory", MEMORY_OPTIONS[app.deploy_memory_idx].1, app.deploy_config_field == 0),
-                ("CPUs", CPU_OPTIONS[app.deploy_cpu_idx].1, app.deploy_config_field == 1),
+                ("Memory", &mem_label, app.deploy_config_field == 0),
+                ("CPUs", &cpu_label, app.deploy_config_field == 1),
                 ("Disk", &disk_label, app.deploy_config_field == 2),
             ];
             for (label, value, selected) in fields {
@@ -868,11 +870,11 @@ fn draw_deploy_overlay(f: &mut Frame, app: &App, step: DeployStep) {
                 ]),
                 Line::from(vec![
                     Span::styled("  Memory: ", Style::default().fg(SUBTEXT)),
-                    Span::styled(MEMORY_OPTIONS[app.deploy_memory_idx].1, Style::default().fg(TEXT)),
+                    Span::styled(app.selected_memory_label(), Style::default().fg(TEXT)),
                 ]),
                 Line::from(vec![
                     Span::styled("  CPUs:   ", Style::default().fg(SUBTEXT)),
-                    Span::styled(CPU_OPTIONS[app.deploy_cpu_idx].1, Style::default().fg(TEXT)),
+                    Span::styled(app.selected_cpu_label(), Style::default().fg(TEXT)),
                 ]),
                 Line::from(vec![
                     Span::styled("  Disk:   ", Style::default().fg(SUBTEXT)),

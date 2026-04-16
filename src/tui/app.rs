@@ -47,7 +47,7 @@ pub enum DeployStep {
 // Constants
 // ============================================================================
 
-pub const MEMORY_OPTIONS: &[(u64, &str)] = &[
+pub const MEMORY_PRESETS: &[(u64, &str)] = &[
     (1024, "1 GB"),
     (2048, "2 GB"),
     (4096, "4 GB"),
@@ -56,14 +56,20 @@ pub const MEMORY_OPTIONS: &[(u64, &str)] = &[
     (32768, "32 GB"),
     (49152, "48 GB"),
     (65536, "64 GB"),
+    (98304, "96 GB"),
+    (131072, "128 GB"),
 ];
 
-pub const CPU_OPTIONS: &[(u32, &str)] = &[
+pub const CPU_PRESETS: &[(u32, &str)] = &[
     (1, "1 CPU"),
     (2, "2 CPUs"),
     (4, "4 CPUs"),
     (8, "8 CPUs"),
     (16, "16 CPUs"),
+    (24, "24 CPUs"),
+    (32, "32 CPUs"),
+    (48, "48 CPUs"),
+    (64, "64 CPUs"),
 ];
 
 pub const DISK_OPTIONS: &[(u64, &str)] = &[
@@ -629,14 +635,11 @@ impl App {
     }
 
     // Get max memory index based on node's RAM
-    pub fn max_memory_idx(&self) -> usize {
-        let Some(node) = self.selected_node() else {
-            return MEMORY_OPTIONS.len() - 1;
-        };
-
-        // Parse RAM string (e.g., "7.5G", "16GB", "8192MB", "8192M")
+    /// Parse the node's RAM into MB
+    fn node_ram_mb(&self) -> u64 {
+        let Some(node) = self.selected_node() else { return 0 };
         let ram_str = node.ram.to_uppercase();
-        let ram_mb: u64 = if ram_str.contains("GB") {
+        if ram_str.contains("GB") {
             ram_str.replace("GB", "").trim().parse::<f64>().unwrap_or(0.0) as u64 * 1024
         } else if ram_str.ends_with("G") {
             ram_str.trim_end_matches('G').trim().parse::<f64>().unwrap_or(0.0) as u64 * 1024
@@ -646,21 +649,58 @@ impl App {
             ram_str.trim_end_matches('M').trim().parse::<u64>().unwrap_or(0)
         } else {
             ram_str.trim().parse::<u64>().unwrap_or(0)
-        };
+        }
+    }
 
-        // Find highest option that fits
-        MEMORY_OPTIONS.iter()
-            .rposition(|(mb, _)| *mb <= ram_mb)
-            .unwrap_or(0)
+    /// Get memory options for the selected node (presets + max)
+    pub fn get_memory_options(&self) -> Vec<(u64, String)> {
+        let ram_mb = self.node_ram_mb();
+        // Reserve 512MB for Alpine host
+        let available = ram_mb.saturating_sub(512);
+
+        let mut options: Vec<(u64, String)> = MEMORY_PRESETS.iter()
+            .filter(|(mb, _)| *mb <= available)
+            .map(|(mb, label)| (*mb, label.to_string()))
+            .collect();
+
+        // Add max option if it's not already a preset
+        if available > 0 && !options.iter().any(|(mb, _)| *mb == available) {
+            let gb = available as f64 / 1024.0;
+            if gb == gb.floor() {
+                options.push((available, format!("{} GB (max)", gb as u64)));
+            } else {
+                options.push((available, format!("{:.1} GB (max)", gb)));
+            }
+        }
+
+        options
+    }
+
+    pub fn max_memory_idx(&self) -> usize {
+        self.get_memory_options().len().saturating_sub(1)
+    }
+
+    pub fn selected_memory_mb(&self) -> u64 {
+        let options = self.get_memory_options();
+        options.get(self.deploy_memory_idx)
+            .map(|(mb, _)| *mb)
+            .unwrap_or(4096)
+    }
+
+    pub fn selected_memory_label(&self) -> String {
+        let options = self.get_memory_options();
+        options.get(self.deploy_memory_idx)
+            .map(|(_, label)| label.clone())
+            .unwrap_or_else(|| "4 GB".to_string())
     }
 
     // Get max CPU index based on node's cores
-    pub fn max_cpu_idx(&self) -> usize {
+    /// Get CPU options for the selected node (presets + max)
+    pub fn get_cpu_options(&self) -> Vec<(u32, String)> {
         let Some(node) = self.selected_node() else {
-            return CPU_OPTIONS.len() - 1;
+            return vec![(1, "1 CPU".to_string())];
         };
 
-        // Parse cores string (e.g., "4 cores", "4")
         let cores_str = node.cores.to_lowercase();
         let cores: u32 = cores_str
             .split_whitespace()
@@ -668,9 +708,38 @@ impl App {
             .and_then(|s| s.parse().ok())
             .unwrap_or(1);
 
-        CPU_OPTIONS.iter()
-            .rposition(|(c, _)| *c <= cores)
-            .unwrap_or(0)
+        // Reserve 1 CPU for Alpine host
+        let available = cores.saturating_sub(1).max(1);
+
+        let mut options: Vec<(u32, String)> = CPU_PRESETS.iter()
+            .filter(|(c, _)| *c <= available)
+            .map(|(c, label)| (*c, label.to_string()))
+            .collect();
+
+        // Add max option if not already a preset
+        if available > 0 && !options.iter().any(|(c, _)| *c == available) {
+            options.push((available, format!("{} CPUs (max)", available)));
+        }
+
+        options
+    }
+
+    pub fn max_cpu_idx(&self) -> usize {
+        self.get_cpu_options().len().saturating_sub(1)
+    }
+
+    pub fn selected_cpu_count(&self) -> u32 {
+        let options = self.get_cpu_options();
+        options.get(self.deploy_cpu_idx)
+            .map(|(c, _)| *c)
+            .unwrap_or(2)
+    }
+
+    pub fn selected_cpu_label(&self) -> String {
+        let options = self.get_cpu_options();
+        options.get(self.deploy_cpu_idx)
+            .map(|(_, label)| label.clone())
+            .unwrap_or_else(|| "2 CPUs".to_string())
     }
 
     // Get disk size options for the selected disk (includes max capacity)
@@ -1481,8 +1550,8 @@ impl App {
             }
         };
 
-        let memory = MEMORY_OPTIONS[self.deploy_memory_idx].0;
-        let cpus = CPU_OPTIONS[self.deploy_cpu_idx].0;
+        let memory = self.selected_memory_mb();
+        let cpus = self.selected_cpu_count();
         let disk = self.selected_disk_size_gb();
 
         // Log output to file for debugging
