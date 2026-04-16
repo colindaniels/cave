@@ -8,7 +8,7 @@
     "cores": "4",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 174,
+    "ram_used_mb": 179,
     "disks": [
       {
         "name": "sda",
@@ -34,7 +34,7 @@
     "cores": "4",
     "ram": "7.5G",
     "ram_total_mb": 7724,
-    "ram_used_mb": 4292,
+    "ram_used_mb": 4310,
     "disks": [
       {
         "name": "nvme0n1",
@@ -47,7 +47,7 @@
       "name": "mercury2-vm",
       "ip": "192.168.1.151",
       "memory": "4096M",
-      "memory_used_mb": 1476,
+      "memory_used_mb": 1526,
       "cpus": "4"
     }
   },
@@ -151,7 +151,7 @@
     "cores": "22",
     "ram": "62.5G",
     "ram_total_mb": 63978,
-    "ram_used_mb": 13861,
+    "ram_used_mb": 13869,
     "disks": [
       {
         "name": "nvme0n1",
@@ -172,12 +172,12 @@
     "hostname": "plutonium",
     "mac": "30:56:0f:46:b3:ed",
     "ip": "192.168.1.158",
-    "status": "standby",
+    "status": "active",
     "cpu": "AMD Ryzen Threadripper 9960X 24-Cores",
     "cores": "48",
     "ram": "125.1G",
     "ram_total_mb": 128144,
-    "ram_used_mb": 388,
+    "ram_used_mb": 1549,
     "disks": [
       {
         "name": "sda",
@@ -198,6 +198,12 @@
         "model": "Samsung SSD 970 EVO Plus 1TB"
       }
     ],
-    "vm": null
+    "vm": {
+      "name": "plutonium-vm",
+      "ip": "192.168.1.128",
+      "memory": "16384M",
+      "memory_used_mb": null,
+      "cpus": "8"
+    }
   }
 ]

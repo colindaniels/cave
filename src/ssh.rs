@@ -265,6 +265,11 @@ impl SshConnection {
         Ok(output)
     }
 
+    /// Temporarily set a longer timeout for slow operations
+    pub fn set_timeout(&self, timeout: Duration) {
+        self.session.set_timeout(timeout.as_millis() as u32);
+    }
+
     pub fn execute_with_status(&self, command: &str) -> Result<(String, i32)> {
         let mut channel = self.session.channel_session()
             .context("Failed to open SSH channel")?;

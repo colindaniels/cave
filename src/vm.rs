@@ -59,12 +59,13 @@ pub fn mount_storage(ssh: &SshConnection, disk_name: &str) -> Result<()> {
         largest_part.trim().to_string()
     };
 
-    // Wipe and format as ext4
+    // Format as ext4 - use longer timeout for large disks
     println!("  Formatting {} as ext4...", disk_path);
+    ssh.set_timeout(std::time::Duration::from_secs(300));
     let (output, mkfs_status) = ssh.execute_with_status(&format!(
-        "dd if=/dev/zero of={} bs=1M count=10 2>/dev/null; mkfs.ext4 -F {}",
-        disk_path, disk_path
+        "mkfs.ext4 -F {} 2>&1", disk_path
     ))?;
+    ssh.set_timeout(std::time::Duration::from_secs(10));
 
     if mkfs_status != 0 {
         anyhow::bail!("Failed to format disk {}: {}", disk_path, output);

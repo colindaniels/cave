@@ -1541,8 +1541,12 @@ impl App {
             }
         };
 
-        let hostname = match self.selected_node() {
-            Some(node) => node.hostname.clone(),
+        let (hostname, disk_name) = match self.selected_node() {
+            Some(node) => {
+                let dn = node.disks.get(self.deploy_disk_select_idx)
+                    .map(|d| d.name.clone());
+                (node.hostname.clone(), dn)
+            }
             None => {
                 self.set_status("No node selected");
                 self.overlay = Overlay::None;
@@ -1573,6 +1577,10 @@ impl App {
             "--cpus".to_string(), cpus.to_string(),
             "--disk".to_string(), disk.to_string(),
         ];
+        if let Some(ref dn) = disk_name {
+            args.push("--disk-name".to_string());
+            args.push(dn.clone());
+        }
         if !self.deploy_username.is_empty() {
             args.push("--username".to_string());
             args.push(self.deploy_username.clone());

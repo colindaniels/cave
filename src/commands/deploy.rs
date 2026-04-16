@@ -19,6 +19,7 @@ pub async fn run(
     memory_opt: Option<u32>,
     cpus_opt: Option<u32>,
     disk_opt: Option<u64>,
+    disk_name_opt: Option<String>,
     username_opt: Option<String>,
     password_opt: Option<String>,
 ) -> Result<()> {
@@ -161,6 +162,9 @@ pub async fn run(
             ui::print_warning("No disks detected on node - using default storage");
         }
         None
+    } else if let Some(ref dn) = disk_name_opt {
+        // Disk specified by name
+        disks.iter().find(|d| d.name == *dn).or(Some(&disks[0]))
     } else if disks.len() == 1 || non_interactive {
         // Use first disk in non-interactive mode or if only one disk
         if !non_interactive {
@@ -255,9 +259,9 @@ pub async fn run(
     let cpu_values: Vec<u32> = filtered_cpus.iter().map(|(val, _)| *val).collect();
 
     let cpus = if let Some(c) = cpus_opt {
-        // Non-interactive: use provided value (validate it's available)
-        if !cpu_values.contains(&c) {
-            anyhow::bail!("CPU count {} not available (max: {})", c, cpu_values.last().unwrap_or(&0));
+        // Non-interactive: validate against available cores
+        if c > node_cpu_cores {
+            anyhow::bail!("CPU count {} exceeds available cores ({})", c, node_cpu_cores);
         }
         c
     } else {

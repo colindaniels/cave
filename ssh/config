@@ -34,6 +34,13 @@ Host platinum-vm
     IdentityFile /home/colindaniels/cave/ssh/cave
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
+# Cave managed node: plutonium-vm
+Host plutonium-vm
+    HostName 192.168.1.128
+    User colindaniels2
+    IdentityFile /home/colindaniels/cave/ssh/cave
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
 # Cave managed node: mercury2-vm
 Host mercury2-vm
     HostName 192.168.1.151
