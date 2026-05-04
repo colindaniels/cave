@@ -57,17 +57,19 @@ pub async fn run() -> Result<()> {
                     (None, None)
                 };
 
-                let vm_info = if info.status == NodeStatus::Active {
-                    verified_ip.as_ref().and_then(|ip| get_vm_info(ip))
+                let vm_infos = if info.status == NodeStatus::Active {
+                    verified_ip.as_ref()
+                        .map(|ip| get_all_vm_info(ip))
+                        .unwrap_or_default()
                 } else {
-                    None
+                    vec![]
                 };
 
-                // Update SSH config for VM if it has an IP
-                if let Some(ref vm) = vm_info {
+                // Update SSH config for each VM that has an IP
+                for vm in &vm_infos {
                     if !vm.ip.is_empty() {
                         // Read username from local VM config if available
-                        let vm_conf_path = Config::vms_dir().join(format!("{}.conf", node.hostname));
+                        let vm_conf_path = Config::vms_dir().join(format!("{}.conf", vm.name));
                         let vm_user = std::fs::read_to_string(&vm_conf_path)
                             .ok()
                             .and_then(|content| {
@@ -96,7 +98,7 @@ pub async fn run() -> Result<()> {
                         disk_type: d.disk_type.clone(),
                         model: d.model.clone(),
                     }).collect(),
-                    vm: vm_info,
+                    vms: vm_infos,
                 }
             })
         })
@@ -134,7 +136,7 @@ fn discover_unknown_nodes(config: &Config, mac_to_ip: &std::collections::HashMap
 
     // Also exclude VM MACs (generated from VM name)
     for node in cached_nodes {
-        if let Some(ref vm) = node.vm {
+        for vm in &node.vms {
             let vm_mac = vm::generate_mac_for_lookup(&vm.name).to_lowercase();
             known_macs.insert(vm_mac);
         }
@@ -168,10 +170,10 @@ fn discover_unknown_nodes(config: &Config, mac_to_ip: &std::collections::HashMap
 
                 let (ram_total_mb, ram_used_mb) = get_host_ram_usage(&ip);
 
-                let vm_info = if info.status == NodeStatus::Active {
-                    get_vm_info(&ip)
+                let vm_infos = if info.status == NodeStatus::Active {
+                    get_all_vm_info(&ip)
                 } else {
-                    None
+                    vec![]
                 };
 
                 Some(CachedNode {
@@ -190,7 +192,7 @@ fn discover_unknown_nodes(config: &Config, mac_to_ip: &std::collections::HashMap
                         disk_type: d.disk_type.clone(),
                         model: d.model.clone(),
                     }).collect(),
-                    vm: vm_info,
+                    vms: vm_infos,
                 })
             })
         })
@@ -225,12 +227,15 @@ fn get_host_ram_usage(host_ip: &str) -> (Option<u64>, Option<u64>) {
     }
 }
 
-fn get_vm_info(host_ip: &str) -> Option<CachedVm> {
-    let ssh = SshConnection::connect(host_ip).ok()?;
+fn get_all_vm_info(host_ip: &str) -> Vec<CachedVm> {
+    let ssh = match SshConnection::connect(host_ip) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
 
-    let output = ssh
-        .execute(&format!(
-            r#"for pid in {}/*.pid; do
+    // Remove `exit 0` so it finds ALL running VMs, not just the first
+    let output = match ssh.execute(&format!(
+        r#"for pid in {}/*.pid; do
             [ -f "$pid" ] && kill -0 $(cat "$pid") 2>/dev/null && {{
                 vm=$(basename "$pid" .pid)
                 qemu_args=$(cat /proc/$(cat "$pid")/cmdline 2>/dev/null | tr '\0' ' ')
@@ -240,35 +245,28 @@ fn get_vm_info(host_ip: &str) -> Option<CachedVm> {
                 mem=$(echo "$qemu_args" | sed -n 's/.*-m \([0-9]*\).*/\1/p')
                 cpus=$(echo "$qemu_args" | sed -n 's/.*-smp \([0-9]*\).*/\1/p')
                 echo "$vm|$ip|$mem|$cpus"
-                exit 0
             }}
         done"#,
-            vm::VM_RUN_PATH
-        ))
-        .ok()?;
+        vm::VM_RUN_PATH
+    )) {
+        Ok(o) => o,
+        Err(_) => return vec![],
+    };
 
-    let parts: Vec<&str> = output.trim().split('|').collect();
-    if parts.len() >= 4 && !parts[0].is_empty() {
-        let vm_ip = parts[1].to_string();
-        let allocated_mem = parts[2].to_string();
-
-        // Get VM's actual memory usage if we have its IP
-        let memory_used_mb = if !vm_ip.is_empty() {
-            get_vm_memory_usage(&vm_ip)
+    output.trim().lines().filter_map(|line| {
+        let parts: Vec<&str> = line.split('|').collect();
+        if parts.len() >= 4 && !parts[0].is_empty() {
+            Some(CachedVm {
+                name: parts[0].to_string(),
+                ip: parts[1].to_string(),
+                memory: format!("{}M", parts[2]),
+                memory_used_mb: None,
+                cpus: parts[3].to_string(),
+            })
         } else {
             None
-        };
-
-        Some(CachedVm {
-            name: parts[0].to_string(),
-            ip: vm_ip,
-            memory: format!("{}M", allocated_mem),
-            memory_used_mb,
-            cpus: parts[3].to_string(),
-        })
-    } else {
-        None
-    }
+        }
+    }).collect()
 }
 
 /// Get VM's actual memory usage by SSHing into the VM

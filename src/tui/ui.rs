@@ -75,6 +75,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Overlay::ActionProgress(msg) => draw_action_progress_overlay(f, msg),
         Overlay::ImageDownload => draw_image_download_overlay(f, app),
         Overlay::NodeInit => draw_node_init_overlay(f, app),
+        Overlay::ConfirmInit => draw_confirm_init_overlay(f, app),
         Overlay::ConfirmRemove => draw_confirm_remove_overlay(f, app),
         Overlay::SetDescription => draw_description_overlay(f, app),
         Overlay::Help => draw_help_overlay(f),
@@ -118,7 +119,7 @@ fn draw_stats_bar(f: &mut Frame, app: &App, area: Rect) {
     let online = app.nodes.iter().filter(|n| n.status == "active").count();
     let standby = app.nodes.iter().filter(|n| n.status == "standby").count();
     let offline = app.nodes.iter().filter(|n| n.status == "offline").count();
-    let with_vm = app.nodes.iter().filter(|n| n.vm.is_some()).count();
+    let total_vms: usize = app.nodes.iter().map(|n| n.vms.len()).sum();
 
     // Calculate total disk from all nodes
     let total_disk: u64 = app.nodes.iter()
@@ -147,7 +148,7 @@ fn draw_stats_bar(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(" off", Style::default().fg(SUBTEXT)),
         ]),
         Line::from(vec![
-            Span::styled(format!("{} VMs running", with_vm), Style::default().fg(SUBTEXT)),
+            Span::styled(format!("{} VMs running", total_vms), Style::default().fg(SUBTEXT)),
         ]),
     ];
     let nodes_para = Paragraph::new(nodes_text)
@@ -253,7 +254,7 @@ fn draw_node_list(f: &mut Frame, app: &App, area: Rect) {
             match sel_item {
                 SelectableItem::Node(ni) => {
                     let node = &app.nodes[*ni];
-                    let (indicator, color) = if node.vm.is_some() {
+                    let (indicator, color) = if !node.vms.is_empty() {
                         ("●", GREEN)
                     } else if node.status == "active" || node.status == "standby" {
                         ("●", YELLOW)
@@ -274,9 +275,9 @@ fn draw_node_list(f: &mut Frame, app: &App, area: Rect) {
                     }
                     ListItem::new(Line::from(spans)).style(style)
                 }
-                SelectableItem::Vm(ni) => {
+                SelectableItem::Vm(ni, vi) => {
                     let node = &app.nodes[*ni];
-                    let vm = node.vm.as_ref().unwrap();
+                    let vm = &node.vms[*vi];
                     let style = if is_selected {
                         Style::default().fg(MAUVE).bg(SURFACE0).add_modifier(Modifier::BOLD)
                     } else {
@@ -361,11 +362,29 @@ fn draw_node_details(f: &mut Frame, app: &App, area: Rect) {
             ]),
             Line::from(vec![
                 Span::styled("  Memory   ", Style::default().fg(SUBTEXT)),
-                Span::styled(&vm.memory, Style::default().fg(TEXT)),
+                Span::styled({
+                    let mem_mb = vm.memory.trim_end_matches('M').parse::<u64>().unwrap_or(0);
+                    if mem_mb >= 1024 && mem_mb % 1024 == 0 {
+                        format!("{} GB", mem_mb / 1024)
+                    } else if mem_mb >= 1024 {
+                        format!("{:.1} GB", mem_mb as f64 / 1024.0)
+                    } else {
+                        format!("{} MB", mem_mb)
+                    }
+                }, Style::default().fg(TEXT)),
             ]),
             Line::from(vec![
                 Span::styled("  CPUs     ", Style::default().fg(SUBTEXT)),
                 Span::styled(&vm.cpus, Style::default().fg(TEXT)),
+            ]),
+            Line::from(vec![
+                Span::styled("  Storage  ", Style::default().fg(SUBTEXT)),
+                Span::styled(
+                    app.vm_disk_gb(&vm.name)
+                        .map(|gb| format!("{} GB", gb))
+                        .unwrap_or_else(|| "-".to_string()),
+                    Style::default().fg(TEXT),
+                ),
             ]),
             Line::from(""),
             Line::from(vec![
@@ -476,50 +495,31 @@ fn draw_node_details(f: &mut Frame, app: &App, area: Rect) {
         ]),
     ];
 
-    // Add VM section if running
-    if let Some(ref vm) = node.vm {
+    // Add VMs section
+    if !node.vms.is_empty() {
         info_lines.push(Line::from(""));
         info_lines.push(Line::from(vec![
-            Span::styled("  ── VM ──", Style::default().fg(MAUVE).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  ── VMs ({}) ──", node.vms.len()), Style::default().fg(MAUVE).add_modifier(Modifier::BOLD)),
         ]));
-        info_lines.push(Line::from(vec![
-            Span::styled("  Name     ", Style::default().fg(SUBTEXT)),
-            Span::styled(&vm.name, Style::default().fg(TEXT).add_modifier(Modifier::BOLD)),
-        ]));
-        // VM status - if we have VM info, it's online/running
-        let (vm_status_color, vm_status_text) = if vm.ip.is_empty() {
-            (YELLOW, "Starting")
-        } else {
-            (GREEN, "Online")
-        };
-        info_lines.push(Line::from(vec![
-            Span::styled("  Status   ", Style::default().fg(SUBTEXT)),
-            Span::styled("● ", Style::default().fg(vm_status_color)),
-            Span::styled(vm_status_text, Style::default().fg(TEXT)),
-        ]));
-        info_lines.push(Line::from(vec![
-            Span::styled("  IP       ", Style::default().fg(SUBTEXT)),
-            Span::styled(&vm.ip, Style::default().fg(TEXT)),
-        ]));
-
-        // VM Memory display: show usage if available
-        let (vm_mem_display, vm_mem_percent) = format_vm_memory_usage(vm);
-        let vm_mem_color = vm_mem_percent.map(usage_color).unwrap_or(TEXT);
-        info_lines.push(Line::from(vec![
-            Span::styled("  Memory   ", Style::default().fg(SUBTEXT)),
-            Span::styled(vm_mem_display, Style::default().fg(vm_mem_color)),
-        ]));
-        info_lines.push(Line::from(vec![
-            Span::styled("  CPUs     ", Style::default().fg(SUBTEXT)),
-            Span::styled(&vm.cpus, Style::default().fg(TEXT)),
-        ]));
+        for vm in &node.vms {
+            let (vm_status_color, vm_status_text) = if vm.ip.is_empty() {
+                (YELLOW, "Starting")
+            } else {
+                (GREEN, "Online")
+            };
+            info_lines.push(Line::from(vec![
+                Span::styled("  ● ", Style::default().fg(vm_status_color)),
+                Span::styled(&vm.name, Style::default().fg(TEXT)),
+                Span::styled(format!("  {}", if vm.ip.is_empty() { "-" } else { &vm.ip }), Style::default().fg(SUBTEXT)),
+            ]));
+        }
     } else {
         info_lines.push(Line::from(""));
         info_lines.push(Line::from(vec![
-            Span::styled("  ── VM ──", Style::default().fg(SUBTEXT)),
+            Span::styled("  ── VMs ──", Style::default().fg(SUBTEXT)),
         ]));
         info_lines.push(Line::from(vec![
-            Span::styled("  No VM deployed", Style::default().fg(SUBTEXT)),
+            Span::styled("  No VMs deployed", Style::default().fg(SUBTEXT)),
         ]));
     }
 
@@ -1071,6 +1071,48 @@ fn draw_description_overlay(f: &mut Frame, app: &App) {
             Span::styled("save   ", Style::default().fg(SUBTEXT)),
             Span::styled("[Esc] ", Style::default().fg(BLUE)),
             Span::styled("cancel", Style::default().fg(SUBTEXT)),
+        ]),
+    ];
+
+    let para = Paragraph::new(lines);
+    f.render_widget(para, inner);
+}
+
+fn draw_confirm_init_overlay(f: &mut Frame, app: &App) {
+    let area = centered_rect(55, 11, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Confirm Initialize ")
+        .title_style(Style::default().fg(RED).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(RED))
+        .style(Style::default().bg(BASE));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Initialize ", Style::default().fg(TEXT)),
+            Span::styled(&app.node_init_hostname, Style::default().fg(RED).add_modifier(Modifier::BOLD)),
+            Span::styled("?", Style::default().fg(TEXT)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  This will wipe ALL disks on the node.", Style::default().fg(RED)),
+        ]),
+        Line::from(vec![
+            Span::styled("  All data will be permanently destroyed.", Style::default().fg(SUBTEXT)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  [y] ", Style::default().fg(RED).add_modifier(Modifier::BOLD)),
+            Span::styled("Confirm    ", Style::default().fg(TEXT)),
+            Span::styled("[n/Esc] ", Style::default().fg(BLUE).add_modifier(Modifier::BOLD)),
+            Span::styled("Cancel", Style::default().fg(TEXT)),
         ]),
     ];
 

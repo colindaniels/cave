@@ -64,6 +64,13 @@ pub async fn run(hostname: &str, vm_name: &str, force: bool) -> Result<()> {
     vm::delete_vm(&ssh, vm_name)?;
     spinner.finish_and_clear();
 
+    // Remove local VM config file
+    let vm_config = Config::vms_dir().join(format!("{}.conf", vm_name));
+    let _ = std::fs::remove_file(&vm_config);
+
+    // Also remove VM SSH config entry
+    let _ = crate::ssh::remove_ssh_config(vm_name);
+
     ui::print_completion("VM Destroyed");
     println!();
     println!(

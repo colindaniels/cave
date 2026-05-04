@@ -79,7 +79,7 @@ pub async fn run() -> Result<()> {
         );
 
         // Show VM info if present
-        if let Some(vm) = &node.vm {
+        for vm in &node.vms {
             let vm_status = style("running").green().to_string();
             let vm_specs = format!("{}, {} CPU", vm.memory, vm.cpus);
 

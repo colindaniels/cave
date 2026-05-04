@@ -188,9 +188,27 @@ async fn main() -> anyhow::Result<()> {
                 deploy::run(hostname.as_deref(), image.as_deref(), memory, cpus, disk, disk_name, username, password).await?
             }
             NodeAction::Destroy { hostname, name, force } => {
-                let default_name = format!("{}-vm", hostname);
-                let vm_name = name.as_deref().unwrap_or(&default_name);
-                destroy::run(&hostname, vm_name, force).await?
+                let vm_name = match name {
+                    Some(n) => n,
+                    None => {
+                        // Find VMs on this node, use first if only one
+                        let cache = crate::config::load_node_cache();
+                        let vms: Vec<String> = cache.iter()
+                            .find(|n| n.hostname == hostname)
+                            .map(|n| n.vms.iter().map(|v| v.name.clone()).collect())
+                            .unwrap_or_default();
+                        match vms.len() {
+                            0 => format!("{}-vm-1", hostname),
+                            1 => vms[0].clone(),
+                            _ => {
+                                eprintln!("Multiple VMs on this node. Use --name to specify:");
+                                for v in &vms { eprintln!("  {}", v); }
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                };
+                destroy::run(&hostname, &vm_name, force).await?
             }
             NodeAction::Remove { hostname, force } => remove::run(&hostname, force).await?,
             NodeAction::Wake { hostname } => wake::run(&hostname).await?,

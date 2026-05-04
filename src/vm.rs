@@ -21,20 +21,25 @@ pub fn mount_storage(ssh: &SshConnection, disk_name: &str) -> Result<()> {
     // Load ext4 module and install tools (needed on Alpine)
     let _ = ssh.execute("modprobe ext4 2>/dev/null; apk add --no-cache e2fsprogs >/dev/null 2>&1");
 
-    // First, look for an existing ext4 partition on this disk (preserves VM data across reboots)
-    let (ext4_part, _) = ssh.execute_with_status(&format!(
-        r#"for p in /dev/{}*; do
-            if [ -b "$p" ] && blkid -o value -s TYPE "$p" 2>/dev/null | grep -q ext4; then
+    // Look for an existing cave-owned ext4 partition (has .cave marker file)
+    let (cave_part, _) = ssh.execute_with_status(&format!(
+        r#"for p in /dev/{} /dev/{}*; do
+            [ -b "$p" ] || continue
+            blkid -o value -s TYPE "$p" 2>/dev/null | grep -q ext4 || continue
+            mount "$p" {} 2>/dev/null || continue
+            if [ -f {}/.cave ]; then
+                umount {} 2>/dev/null
                 echo "$p"
                 break
             fi
+            umount {} 2>/dev/null
         done"#,
-        disk_name
+        disk_name, disk_name, VM_IMAGES_PATH, VM_IMAGES_PATH, VM_IMAGES_PATH, VM_IMAGES_PATH
     ))?;
 
-    if !ext4_part.trim().is_empty() {
-        // Found existing ext4 partition, mount it
-        let disk_path = ext4_part.trim();
+    if !cave_part.trim().is_empty() {
+        // Found cave-owned partition, mount it
+        let disk_path = cave_part.trim();
         let (_, mount_status) = ssh.execute_with_status(&format!(
             "mount {} {}",
             disk_path, VM_IMAGES_PATH
@@ -44,22 +49,8 @@ pub fn mount_storage(ssh: &SshConnection, disk_name: &str) -> Result<()> {
         }
     }
 
-    // No ext4 partition found - find the largest partition to format
-    let (largest_part, _) = ssh.execute_with_status(&format!(
-        r#"ls /dev/{}* 2>/dev/null | grep -E '{}p?[0-9]+$' | while read p; do
-            size=$(cat /sys/class/block/$(basename $p)/size 2>/dev/null || echo 0)
-            echo "$size $p"
-        done | sort -rn | head -1 | awk '{{print $2}}'"#,
-        disk_name, disk_name
-    ))?;
-
-    let disk_path = if largest_part.trim().is_empty() {
-        format!("/dev/{}", disk_name)
-    } else {
-        largest_part.trim().to_string()
-    };
-
-    // Format as ext4 - use longer timeout for large disks
+    // No cave partition - format the whole disk (init should have wiped it already)
+    let disk_path = format!("/dev/{}", disk_name);
     println!("  Formatting {} as ext4...", disk_path);
     ssh.set_timeout(std::time::Duration::from_secs(300));
     let (output, mkfs_status) = ssh.execute_with_status(&format!(
@@ -71,10 +62,10 @@ pub fn mount_storage(ssh: &SshConnection, disk_name: &str) -> Result<()> {
         anyhow::bail!("Failed to format disk {}: {}", disk_path, output);
     }
 
-    // Mount it
+    // Mount and create cave marker
     let (_, mount_status) = ssh.execute_with_status(&format!(
-        "mount {} {}",
-        disk_path, VM_IMAGES_PATH
+        "mount {} {} && touch {}/.cave",
+        disk_path, VM_IMAGES_PATH, VM_IMAGES_PATH
     ))?;
 
     if mount_status != 0 {
@@ -328,6 +319,18 @@ fn setup_vm_firewall(ssh: &SshConnection) -> Result<()> {
         println!("  VM network isolation configured");
     } else {
         println!("  VM firewall already configured");
+    }
+
+    // Block inter-VM traffic (VMs on same host can't reach each other)
+    let _ = ssh.execute("which ebtables >/dev/null 2>&1 || apk add --no-cache ebtables >/dev/null 2>&1");
+    let (_, ebt_status) = ssh.execute_with_status(
+        "ebtables -L FORWARD 2>/dev/null | grep -q 'tap.*tap'"
+    )?;
+    if ebt_status != 0 {
+        let _ = ssh.execute(
+            "ebtables -A FORWARD -i tap+ -o tap+ -j DROP"
+        );
+        println!("  Inter-VM isolation configured");
     }
 
     Ok(())

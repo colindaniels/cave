@@ -109,10 +109,18 @@ pub async fn run(
     // Non-interactive mode check
     let non_interactive = memory_opt.is_some() && cpus_opt.is_some() && disk_opt.is_some();
 
-    // VM name (default to hostname-vm to avoid SSH config conflicts)
-    let default_vm_name = format!("{}-vm", node.hostname);
+    // VM name - auto-increment: hostname-vm-1, hostname-vm-2, etc.
+    let cache = load_node_cache();
+    let existing_vms: Vec<&str> = cache.iter()
+        .flat_map(|n| n.vms.iter().map(|v| v.name.as_str()))
+        .collect();
+    let next_num = (1..).find(|i| {
+        let name = format!("{}-vm-{}", node.hostname, i);
+        !existing_vms.iter().any(|v| *v == name)
+    }).unwrap();
+    let default_vm_name = format!("{}-vm-{}", node.hostname, next_num);
+
     let vm_name: String = if non_interactive {
-        // Use default name in non-interactive mode
         default_vm_name
     } else {
         Input::with_theme(&theme)
@@ -131,7 +139,7 @@ pub async fn run(
                 }
                 // Check against existing VM names
                 let cache = load_node_cache();
-                if cache.iter().any(|n| n.vm.as_ref().map(|v| v.name.as_str()) == Some(name)) {
+                if cache.iter().any(|n| n.vms.iter().any(|v| v.name == name)) {
                     return Err("A VM with this name already exists");
                 }
                 Ok(())
@@ -336,15 +344,15 @@ pub async fn run(
             return Ok(());
         }
         NodeStatus::Active => {
-            ui::print_warning(&format!("Node '{}' has an active VM - stopping it first", node.hostname));
+            ui::print_success(&format!("Node '{}' has VMs running, deploying additional VM", node.hostname));
         }
         NodeStatus::Standby => {
             ui::print_success(&format!("Node '{}' is ready", node.hostname));
         }
     }
 
-    // Remove existing VM config so watcher doesn't restart VM during deployment
-    let vm_config_path = Config::vms_dir().join(format!("{}.conf", node.hostname));
+    // Remove this VM's config if it exists (shouldn't for auto-increment names)
+    let vm_config_path = Config::vms_dir().join(format!("{}.conf", vm_name));
     let _ = fs::remove_file(&vm_config_path);
 
     // Connect via SSH
@@ -374,13 +382,7 @@ pub async fn run(
         ui::print_success("Storage mounted");
     }
 
-    // Stop existing VM if running
-    if vm::is_vm_running(&ssh, &vm_name)? {
-        let spinner = create_spinner("Stopping existing VM...");
-        vm::stop_vm(&ssh, &vm_name)?;
-        spinner.finish_and_clear();
-        ui::print_success("Previous VM stopped");
-    }
+
 
     // Ensure destination directory exists
     let _ = ssh.execute(&format!("mkdir -p {}", vm::VM_IMAGES_PATH));
@@ -447,14 +449,15 @@ pub async fn run(
     // Save VM config on server for auto-start after node reboots
     let vms_dir = Config::vms_dir();
     fs::create_dir_all(&vms_dir)?;
-    let vm_config_path = vms_dir.join(format!("{}.conf", node.hostname));
+    let vm_config_path = vms_dir.join(format!("{}.conf", vm_name));
     let remote_seed_str = remote_seed_path.as_deref().unwrap_or("");
     let disk_name_str = disk_name.as_deref().unwrap_or("");
     let mac_addr = vm::generate_mac_for_lookup(&vm_name);
     let username_str = username_opt.as_deref().unwrap_or("user");
     let vm_config = format!(
-        "NODE_IP={}\nVM_NAME={}\nMEMORY_MB={}\nCPUS={}\nDISK_PATH={}\nSEED_ISO={}\nDISK_NAME={}\nMAC={}\nUSERNAME={}\n",
-        node_ip, vm_name, memory, cpus, remote_image_path, remote_seed_str, disk_name_str, mac_addr, username_str
+        "NODE_IP={}\nVM_NAME={}\nMEMORY_MB={}\nCPUS={}\nDISK_PATH={}\nSEED_ISO={}\nDISK_NAME={}\nMAC={}\nUSERNAME={}\nDISK_GB={}\n",
+        node_ip, vm_name, memory, cpus, remote_image_path, remote_seed_str, disk_name_str, mac_addr, username_str,
+        disk_size.unwrap_or(0)
     );
     fs::write(&vm_config_path, &vm_config)?;
     ui::print_success("VM config saved");

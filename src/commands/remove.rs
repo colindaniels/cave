@@ -2,7 +2,7 @@ use anyhow::Result;
 use console::style;
 use dialoguer::{theme::ColorfulTheme, Confirm};
 
-use crate::config::{scan_for_ip, Config};
+use crate::config::{load_node_cache, scan_for_ip, Config};
 use crate::ssh::{self, SshConnection};
 use crate::ui;
 use crate::vm;
@@ -33,19 +33,25 @@ pub async fn run(hostname: &str, force: bool) -> Result<()> {
         }
     }
 
-    // Try to connect and clean up VM data on the node
-    let vm_name = format!("{}-vm", hostname);
+    // Find all VMs for this node from cache and local configs
+    let cache = load_node_cache();
+    let vm_names: Vec<String> = cache.iter()
+        .find(|n| n.hostname == hostname)
+        .map(|n| n.vms.iter().map(|v| v.name.clone()).collect())
+        .unwrap_or_default();
+
+    // Try to connect and clean up all VM data on the node
     if let Some(ip) = scan_for_ip(&node.mac) {
         if let Ok(ssh) = SshConnection::connect(&ip) {
-            // Stop VM if running
-            if vm::is_vm_running(&ssh, &vm_name).unwrap_or(false) {
-                let _ = vm::stop_vm(&ssh, &vm_name);
-                ui::print_success("VM stopped");
+            for vm_name in &vm_names {
+                if vm::is_vm_running(&ssh, vm_name).unwrap_or(false) {
+                    let _ = vm::stop_vm(&ssh, vm_name);
+                }
+                let _ = vm::delete_vm(&ssh, vm_name);
             }
-
-            // Delete VM disk, config, and seed ISO on the node
-            let _ = vm::delete_vm(&ssh, &vm_name);
-            ui::print_success("VM data wiped from node");
+            if !vm_names.is_empty() {
+                ui::print_success(&format!("{} VM(s) stopped and wiped", vm_names.len()));
+            }
         } else {
             ui::print_warning("Could not connect to node - VM data may remain on disk");
         }
@@ -53,10 +59,15 @@ pub async fn run(hostname: &str, force: bool) -> Result<()> {
         ui::print_warning("Node not found on network - VM data may remain on disk");
     }
 
-    // Remove local VM config file
-    let vm_config = Config::vms_dir().join(format!("{}.conf", hostname));
-    if vm_config.exists() {
-        let _ = std::fs::remove_file(&vm_config);
+    // Remove all local VM config files for this node
+    let vms_dir = Config::vms_dir();
+    if let Ok(entries) = std::fs::read_dir(&vms_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with(&format!("{}-vm-", hostname)) && name.ends_with(".conf") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
     }
 
     // Remove from config
@@ -66,8 +77,10 @@ pub async fn run(hostname: &str, force: bool) -> Result<()> {
     // Remove from SSH config
     ssh::remove_ssh_config(hostname)?;
 
-    // Also remove the VM's SSH config entry
-    ssh::remove_ssh_config(&vm_name)?;
+    // Also remove all VM SSH config entries
+    for vm_name in &vm_names {
+        let _ = ssh::remove_ssh_config(vm_name);
+    }
 
     ui::print_success(&format!("Node '{}' removed", hostname));
 

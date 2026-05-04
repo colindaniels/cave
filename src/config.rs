@@ -136,7 +136,8 @@ pub struct CachedNode {
     pub ram_total_mb: Option<u64>,  // Total RAM in MB
     pub ram_used_mb: Option<u64>,   // Used RAM in MB (by QEMU/VMs)
     pub disks: Vec<CachedDisk>,
-    pub vm: Option<CachedVm>,
+    #[serde(default, deserialize_with = "deserialize_vms")]
+    pub vms: Vec<CachedVm>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -154,6 +155,39 @@ pub struct CachedVm {
     pub memory: String,        // Allocated memory (e.g., "2048M")
     pub memory_used_mb: Option<u64>,  // Actual usage inside VM
     pub cpus: String,
+}
+
+/// Backward-compatible deserializer: handles old "vm": null/{...} and new "vms": [...]
+fn deserialize_vms<'de, D>(deserializer: D) -> Result<Vec<CachedVm>, D::Error>
+where D: serde::Deserializer<'de> {
+    use serde::de;
+
+    struct VmsVisitor;
+    impl<'de> de::Visitor<'de> for VmsVisitor {
+        type Value = Vec<CachedVm>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a VM object, array of VMs, or null")
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> { Ok(vec![]) }
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> { Ok(vec![]) }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut vms = Vec::new();
+            while let Some(vm) = seq.next_element()? {
+                vms.push(vm);
+            }
+            Ok(vms)
+        }
+
+        fn visit_map<A: de::MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+            let vm = CachedVm::deserialize(de::value::MapAccessDeserializer::new(map))?;
+            Ok(vec![vm])
+        }
+    }
+
+    deserializer.deserialize_any(VmsVisitor)
 }
 
 /// Load discovered (uninitialized) nodes cache - same struct as CachedNode, hostname is empty

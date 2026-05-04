@@ -1,50 +1,15 @@
 
-# Cave managed node: platinum
-Host platinum
-    HostName 192.168.1.103
-    User root
-    IdentityFile /home/colindaniels/cave/ssh/cave
-    StrictHostKeyChecking no
-    UserKnownHostsFile /dev/null
-# Cave managed node: mercury2
-Host mercury2
-    HostName 192.168.1.12
-    User root
-    IdentityFile /home/colindaniels/cave/ssh/cave
-    StrictHostKeyChecking no
-    UserKnownHostsFile /dev/null
 # Cave managed node: plutonium
 Host plutonium
-    HostName 192.168.1.158
+    HostName 192.168.1.134
     User root
     IdentityFile /home/colindaniels/cave/ssh/cave
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
-# Cave managed node: mercury1
-Host mercury1
-    HostName 192.168.1.11
-    User root
-    IdentityFile /home/colindaniels/cave/ssh/cave
-    StrictHostKeyChecking no
-    UserKnownHostsFile /dev/null
-# Cave managed node: platinum-vm
-Host platinum-vm
-    HostName 192.168.1.157
-    User openclaw
-    IdentityFile /home/colindaniels/cave/ssh/cave
-    StrictHostKeyChecking no
-    UserKnownHostsFile /dev/null
-# Cave managed node: plutonium-vm
-Host plutonium-vm
-    HostName 192.168.1.128
-    User colindaniels2
-    IdentityFile /home/colindaniels/cave/ssh/cave
-    StrictHostKeyChecking no
-    UserKnownHostsFile /dev/null
-# Cave managed node: mercury2-vm
-Host mercury2-vm
-    HostName 192.168.1.151
-    User root
+# Cave managed node: plutonium-vm-1
+Host plutonium-vm-1
+    HostName 192.168.1.6
+    User colindaniels
     IdentityFile /home/colindaniels/cave/ssh/cave
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null

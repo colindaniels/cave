@@ -27,6 +27,7 @@ pub enum Overlay {
     Deploy(DeployStep),
     ActionProgress(String),  // Running an action (e.g., "Destroying VM...")
     ConfirmRemove,  // Confirm before removing a node (wipes VM data)
+    ConfirmInit,    // Confirm before initializing a node (wipes all disks)
     SetDescription,     // Rename a node hostname
     ImageDownload,
     NodeInit,
@@ -90,7 +91,7 @@ pub const DISK_OPTIONS: &[(u64, &str)] = &[
 pub const NODE_ACTIONS: &[&str] = &[
     "Launch SSH",
     "Deploy VM",
-    "Destroy VM",
+    "Destroy All VMs",
     "Wake (WoL)",
     "Shutdown",
     "Restart",
@@ -119,9 +120,9 @@ pub const DISCOVERED_NODE_ACTIONS: &[&str] = &[
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SelectableItem {
-    Node(usize),           // index into app.nodes
-    Vm(usize),             // index into app.nodes (parent node that owns this VM)
-    DiscoveredNode(usize), // index into app.discovered_nodes
+    Node(usize),              // index into app.nodes
+    Vm(usize, usize),        // (node_index, vm_index within that node)
+    DiscoveredNode(usize),   // index into app.discovered_nodes
 }
 
 // ============================================================================
@@ -393,8 +394,8 @@ impl App {
         let mut items = Vec::new();
         for i in 0..self.nodes.len() {
             items.push(SelectableItem::Node(i));
-            if self.nodes[i].vm.is_some() {
-                items.push(SelectableItem::Vm(i));
+            for j in 0..self.nodes[i].vms.len() {
+                items.push(SelectableItem::Vm(i, j));
             }
         }
         for i in 0..self.discovered_nodes.len() {
@@ -411,7 +412,7 @@ impl App {
     /// Get the selected node (or parent node if VM is selected)
     pub fn selected_node(&self) -> Option<&CachedNode> {
         match self.selected_item()? {
-            SelectableItem::Node(i) | SelectableItem::Vm(i) => self.nodes.get(i),
+            SelectableItem::Node(i) | SelectableItem::Vm(i, _) => self.nodes.get(i),
             SelectableItem::DiscoveredNode(i) => self.discovered_nodes.get(i),
         }
     }
@@ -419,13 +420,13 @@ impl App {
     /// Get the selected VM (only if a VM is selected)
     pub fn selected_vm(&self) -> Option<&CachedVm> {
         match self.selected_item()? {
-            SelectableItem::Vm(i) => self.nodes.get(i)?.vm.as_ref(),
+            SelectableItem::Vm(i, j) => self.nodes.get(i)?.vms.get(j),
             _ => None,
         }
     }
 
     pub fn is_selected_vm(&self) -> bool {
-        matches!(self.selected_item(), Some(SelectableItem::Vm(_)))
+        matches!(self.selected_item(), Some(SelectableItem::Vm(_, _)))
     }
 
     pub fn filtered_images(&self) -> Vec<&(String, u64)> {
@@ -463,8 +464,7 @@ impl App {
     pub fn check_vm_ip(&self, hostname: &str) -> Option<String> {
         self.nodes.iter()
             .find(|n| n.hostname == hostname)
-            .and_then(|n| n.vm.as_ref())
-            .filter(|vm| !vm.ip.is_empty())
+            .and_then(|n| n.vms.iter().find(|vm| !vm.ip.is_empty()))
             .map(|vm| vm.ip.clone())
     }
 
@@ -558,7 +558,7 @@ impl App {
         // Check if VM is gone (node has no VM or VM is None)
         let vm_gone = self.nodes.iter()
             .find(|n| n.hostname == hostname)
-            .map(|n| n.vm.is_none())
+            .map(|n| n.vms.is_empty())
             .unwrap_or(true);
 
         if vm_gone {
@@ -652,11 +652,18 @@ impl App {
         }
     }
 
-    /// Get memory options for the selected node (presets + max)
+    /// Get memory options for the selected node (presets + max), minus existing VM allocations
     pub fn get_memory_options(&self) -> Vec<(u64, String)> {
         let ram_mb = self.node_ram_mb();
+        let Some(node) = self.selected_node() else { return vec![] };
+
+        // Subtract memory already allocated to existing VMs
+        let used_mb: u64 = node.vms.iter()
+            .filter_map(|vm| vm.memory.trim_end_matches('M').parse::<u64>().ok())
+            .sum();
+
         // Reserve 512MB for Alpine host
-        let available = ram_mb.saturating_sub(512);
+        let available = ram_mb.saturating_sub(512).saturating_sub(used_mb);
 
         let mut options: Vec<(u64, String)> = MEMORY_PRESETS.iter()
             .filter(|(mb, _)| *mb <= available)
@@ -708,8 +715,13 @@ impl App {
             .and_then(|s| s.parse().ok())
             .unwrap_or(1);
 
+        // Subtract CPUs already allocated to existing VMs
+        let used_cpus: u32 = node.vms.iter()
+            .filter_map(|vm| vm.cpus.parse::<u32>().ok())
+            .sum();
+
         // Reserve 1 CPU for Alpine host
-        let available = cores.saturating_sub(1).max(1);
+        let available = cores.saturating_sub(1).saturating_sub(used_cpus).max(1);
 
         let mut options: Vec<(u32, String)> = CPU_PRESETS.iter()
             .filter(|(c, _)| *c <= available)
@@ -744,23 +756,62 @@ impl App {
 
     // Get disk size options for the selected disk (includes max capacity)
     pub fn get_disk_options(&self) -> Vec<(u64, String)> {
-        let max_gb = self.selected_node()
-            .and_then(|n| n.disks.get(self.deploy_disk_select_idx))
+        let Some(node) = self.selected_node() else { return vec![] };
+
+        let max_gb = node.disks.get(self.deploy_disk_select_idx)
             .map(|d| d.size_bytes / 1_000_000_000)
             .unwrap_or(500);
 
+        // Subtract disk already used by existing VMs on this disk
+        // Read disk sizes from local VM config files
+        let used_gb: u64 = self.vm_disk_usage_gb(&node.hostname);
+        let available_gb = max_gb.saturating_sub(used_gb);
+
         let mut options: Vec<(u64, String)> = DISK_OPTIONS
             .iter()
-            .filter(|(gb, _)| *gb <= max_gb)
+            .filter(|(gb, _)| *gb <= available_gb)
             .map(|(gb, label)| (*gb, label.to_string()))
             .collect();
 
         // Add max capacity if not already in list
-        if !options.iter().any(|(gb, _)| *gb == max_gb) && max_gb > 0 {
-            options.push((max_gb, format!("{} GB (max)", max_gb)));
+        if !options.iter().any(|(gb, _)| *gb == available_gb) && available_gb > 0 {
+            options.push((available_gb, format!("{} GB (max)", available_gb)));
         }
 
         options
+    }
+
+    /// Get total disk GB used by existing VMs on a node (from local config files)
+    /// Get disk size for a specific VM from its config file
+    pub fn vm_disk_gb(&self, vm_name: &str) -> Option<u64> {
+        let conf_path = Config::vms_dir().join(format!("{}.conf", vm_name));
+        let content = std::fs::read_to_string(&conf_path).ok()?;
+        content.lines()
+            .find(|l| l.starts_with("DISK_GB="))
+            .and_then(|l| l.trim_start_matches("DISK_GB=").parse::<u64>().ok())
+            .filter(|gb| *gb > 0)
+    }
+
+    fn vm_disk_usage_gb(&self, hostname: &str) -> u64 {
+        let vms_dir = Config::vms_dir();
+        let Ok(entries) = std::fs::read_dir(&vms_dir) else { return 0 };
+
+        entries.flatten()
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.starts_with(&format!("{}-vm-", hostname)) && name.ends_with(".conf")
+            })
+            .filter_map(|e| {
+                let content = std::fs::read_to_string(e.path()).ok()?;
+                // Look for DISK_SIZE line or parse from DISK_PATH
+                // The deploy passes --disk which is stored... let's check
+                // Actually disk size isn't in the conf. Let's read it from the qcow2 path
+                // For now, parse from the deploy args - we need to add DISK_GB to the conf
+                content.lines()
+                    .find(|l| l.starts_with("DISK_GB="))
+                    .and_then(|l| l.trim_start_matches("DISK_GB=").parse::<u64>().ok())
+            })
+            .sum()
     }
 
     // Get max disk size index based on selected disk
@@ -799,6 +850,18 @@ impl App {
             Overlay::ImageDownload => self.handle_image_download_keys(code),
             Overlay::NodeInit => self.handle_node_init_keys(code),
             Overlay::Help => self.handle_help_keys(code),
+            Overlay::ConfirmInit => {
+                match code {
+                    KeyCode::Char('y') | KeyCode::Enter => {
+                        self.node_init_pending = true;
+                        self.overlay = Overlay::ActionProgress("Initializing node and wiping disks...".to_string());
+                    }
+                    KeyCode::Char('n') | KeyCode::Esc => {
+                        self.overlay = Overlay::NodeInit;
+                    }
+                    _ => {}
+                }
+            }
             Overlay::ConfirmRemove => {
                 match code {
                     KeyCode::Char('y') | KeyCode::Enter => {
@@ -958,9 +1021,12 @@ impl App {
                     }
                 }
                 2 => {
-                    // Destroy this VM
-                    self.pending_action = Some("destroy".to_string());
-                    self.overlay = Overlay::ActionProgress("Destroying VM...".to_string());
+                    // Destroy this specific VM
+                    if let Some(vm) = self.selected_vm() {
+                        let vm_name = vm.name.clone();
+                        self.pending_action = Some(format!("destroy_vm:{}", vm_name));
+                        self.overlay = Overlay::ActionProgress(format!("Destroying {}...", vm_name));
+                    }
                 }
                 _ => {}
             }
@@ -1024,9 +1090,9 @@ impl App {
                     self.start_deploy();
                 }
                 2 => {
-                    // Destroy VM
-                    self.pending_action = Some("destroy".to_string());
-                    self.overlay = Overlay::ActionProgress("Destroying VM...".to_string());
+                    // Destroy All VMs
+                    self.pending_action = Some("destroy_all".to_string());
+                    self.overlay = Overlay::ActionProgress("Destroying all VMs...".to_string());
                 }
                 3 => {
                     // Wake (WoL)
@@ -1289,9 +1355,7 @@ impl App {
             }
             KeyCode::Enter => {
                 if !self.node_init_hostname.is_empty() && !self.node_init_mac.is_empty() {
-                    // Show loading overlay, execute on next tick
-                    self.node_init_pending = true;
-                    self.overlay = Overlay::ActionProgress("Adding node...".to_string());
+                    self.overlay = Overlay::ConfirmInit;
                 }
             }
             KeyCode::Backspace => {
@@ -1372,6 +1436,37 @@ impl App {
 
         if let Some(node) = self.selected_node() {
             let hostname = node.hostname.clone();
+
+            // Destroy a specific VM by name
+            if let Some(vm_name) = action.strip_prefix("destroy_vm:") {
+                let _ = Command::new("cave")
+                    .args(["node", "destroy", &hostname, "--name", vm_name, "-y"])
+                    .output();
+                self.destroy_waiting = true;
+                self.destroy_target = Some(hostname.clone());
+                self.destroy_wait_start = Some(Instant::now());
+                self.overlay = Overlay::ActionProgress(format!("Confirming {} destroyed...", vm_name));
+                return;
+            }
+
+            // Destroy all VMs on this node
+            if action == "destroy_all" {
+                let vm_names: Vec<String> = node.vms.iter().map(|v| v.name.clone()).collect();
+                if vm_names.is_empty() {
+                    self.set_status("No VMs to destroy");
+                    return;
+                }
+                for vm_name in &vm_names {
+                    let _ = Command::new("cave")
+                        .args(["node", "destroy", &hostname, "--name", vm_name, "-y"])
+                        .output();
+                }
+                self.destroy_waiting = true;
+                self.destroy_target = Some(hostname.clone());
+                self.destroy_wait_start = Some(Instant::now());
+                self.overlay = Overlay::ActionProgress("Confirming VMs destroyed...".to_string());
+                return;
+            }
 
             // Build args - destroy and remove need -y to skip confirmation
             let args: Vec<&str> = if action == "destroy" || action == "remove" {
@@ -1645,7 +1740,7 @@ impl App {
                         ram_total_mb: None,
                         ram_used_mb: None,
                         disks: vec![],
-                        vm: None,
+                        vms: vec![],
                     });
                     // Save to cache file so refresh_data doesn't lose it
                     let _ = save_node_cache(&self.nodes);
