@@ -200,8 +200,21 @@ pub async fn run(
         Some(&disks[disk_idx])
     };
 
-    // Memory selection - filter by available RAM (reserve ~512MB for host)
-    let available_ram = node_ram_mb.saturating_sub(512);
+    // Memory selection — budget by ALLOCATION, not live usage. qemu claims host pages
+    // lazily, so a freshly-booted VM looks tiny in `free` while being promised far more;
+    // the host dies later when the guest finally touches its pages.
+    //  - reserve for host OS/hypervisor: 8% of node RAM, min 2 GB
+    //  - subtract allocations of VMs already on this node, plus ~5% qemu overhead each
+    //  - the new VM also pays ~5% overhead (enforced at the checks below)
+    let reserve_mb = (node_ram_mb / 12).max(2048);
+    let existing_alloc_mb: u32 = cache
+        .iter()
+        .find(|n| n.hostname == node.hostname)
+        .map(|n| n.vms.iter().map(|v| parse_mem_mb(&v.memory)).sum())
+        .unwrap_or(0);
+    let available_ram = node_ram_mb
+        .saturating_sub(reserve_mb)
+        .saturating_sub(existing_alloc_mb.saturating_add(existing_alloc_mb / 20));
     let all_memory_options = [
         (1024u32, "1024 MB (1 GB)"),
         (2048, "2048 MB (2 GB)"),
@@ -211,11 +224,12 @@ pub async fn run(
         (32768, "32768 MB (32 GB)"),
         (49152, "49152 MB (48 GB)"),
         (65536, "65536 MB (64 GB)"),
+        (98304, "98304 MB (96 GB)"),
     ];
 
     let filtered_memory: Vec<_> = all_memory_options
         .iter()
-        .filter(|(val, _)| *val <= available_ram)
+        .filter(|(val, _)| val.saturating_add(*val / 20) <= available_ram)
         .collect();
 
     if filtered_memory.is_empty() {
@@ -227,9 +241,12 @@ pub async fn run(
     let memory_values: Vec<u32> = filtered_memory.iter().map(|(val, _)| *val).collect();
 
     let memory = if let Some(mem) = memory_opt {
-        // Non-interactive: validate against available RAM
-        if mem > available_ram {
-            anyhow::bail!("Memory {} MB exceeds available RAM ({} MB)", mem, available_ram);
+        // Non-interactive: validate against available RAM, including this VM's ~5% qemu overhead
+        if mem.saturating_add(mem / 20) > available_ram {
+            anyhow::bail!(
+                "Memory {} MB (+~{} MB qemu overhead) exceeds allocatable RAM ({} MB after host reserve and existing VMs)",
+                mem, mem / 20, available_ram
+            );
         }
         mem
     } else {
@@ -790,4 +807,16 @@ fn generate_disk_options(disk: Option<&DiskInfo>) -> (Vec<String>, Vec<Option<u3
     }
 
     (options, values)
+}
+
+/// Parse a cached VM allocation string ("127488M", "110G", or bare MB) into MB.
+fn parse_mem_mb(s: &str) -> u32 {
+    let t = s.trim().to_ascii_uppercase();
+    let digits: String = t.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let n: u32 = digits.parse().unwrap_or(0);
+    if t[digits.len()..].starts_with('G') {
+        n.saturating_mul(1024)
+    } else {
+        n
+    }
 }
